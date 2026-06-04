@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .config_store import data_dir, load_config
-from .gitlab_client import GitLabIssueClient
+from .provider import IssueProvider, active_provider_context
 from .report_service import simplify_issue
 from .utils import parse_dt, read_json, write_json
 
@@ -47,6 +47,7 @@ STOPWORDS = {
     "when",
     "issue",
     "gitlab",
+    "github",
     "comment",
     "discussion",
     "please",
@@ -385,14 +386,7 @@ def _rebuild_rag_index_legacy(
     job_id: str | None = None,
 ) -> dict[str, Any]:
     config = load_config()
-    if (
-        not config.get("gitlab_url")
-        or not config.get("token")
-        or not config.get("project_ref")
-    ):
-        raise ValueError("請先完成 GitLab 連線設定。Phase 1 需要直接抓 discussions。")
-
-    client = GitLabIssueClient(config["gitlab_url"], config["token"], verify_ssl=False)
+    client, project_ref = active_provider_context(config)
     existing_index = load_rag_index()
     cached_issues = _existing_issue_cache(existing_index)
 
@@ -438,9 +432,7 @@ def _rebuild_rag_index_legacy(
             issue_chunks = [_build_overview_chunk(issue)]
 
             try:
-                discussions = client.fetch_issue_discussions(
-                    config["project_ref"], issue["iid"]
-                )
+                discussions = client.fetch_issue_discussions(project_ref, issue["iid"])
                 issue_chunks.extend(_build_discussion_chunks(issue, discussions))
                 indexed_issues += 1
                 rebuilt_issues += 1
@@ -522,20 +514,14 @@ def rebuild_rag_index(
     job_id: str | None = None,
 ) -> dict[str, Any]:
     config = load_config()
-    client: GitLabIssueClient | None = None
-    project_ref = str(config.get("project_ref") or "").strip()
+    client: IssueProvider | None = None
+    project_ref = ""
 
-    def get_client() -> GitLabIssueClient:
-        nonlocal client
+    def get_client() -> IssueProvider:
+        nonlocal client, project_ref
         if client is not None:
             return client
-        if not config.get("gitlab_url") or not config.get("token") or not project_ref:
-            raise ValueError(
-                "GitLab connection settings are incomplete, cannot rebuild changed RAG discussions."
-            )
-        client = GitLabIssueClient(
-            config["gitlab_url"], config["token"], verify_ssl=False
-        )
+        client, project_ref = active_provider_context(config)
         return client
 
     existing_index = load_rag_index()
@@ -583,7 +569,8 @@ def rebuild_rag_index(
             issue_chunks = [_build_overview_chunk(issue)]
 
             try:
-                discussions = get_client().fetch_issue_discussions(
+                provider = get_client()
+                discussions = provider.fetch_issue_discussions(
                     project_ref, issue["iid"]
                 )
                 issue_chunks.extend(_build_discussion_chunks(issue, discussions))
@@ -811,7 +798,7 @@ def build_rag_prompt(question: str, results: list[dict[str, Any]]) -> str:
     source_block = "\n\n".join(references)
 
     return (
-        "你是一位 GitLab Issue 討論知識助理。\n"
+        "你是一位 Issue 討論知識助理。\n"
         "請只根據提供的 Sources 回答，使用繁體中文。\n"
         "如果 Sources 不足以支持答案，要明確說資訊不足。\n"
         "回答時可以條列，但不要捏造不存在的結論。\n"

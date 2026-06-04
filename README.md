@@ -1,71 +1,115 @@
 # Gitlab Tracker
 
-Gitlab Tracker 是一個 Electron 桌面 App，前端使用 HTML/CSS/TypeScript，後端使用 Python FastAPI。它把 GitLab Issue 同步、分析儀表板、Issue 整理、AI 摘要與週報輸出整合在同一個工具裡，方便 PM、Tech Lead 與工程團隊在本機快速整理專案現況。
+Gitlab Tracker 是一套 Electron 桌面應用程式，使用 partial-based HTML/CSS/TypeScript 前端與 Python FastAPI 後端，集中同步、分析與彙整 GitLab 或 GitHub Issues。
 
-## 目前功能
+產品名稱仍為 **Gitlab Tracker**，但目前支援 GitLab 與 GitHub Issue Provider。一次只能啟用一個 provider 與一個 project/repository，切換來源時會清除 Issue 與 RAG cache，避免不同來源資料混用。
 
-- Dashboard：顯示本週新增、近期更新、開啟中、風險 Issue。
-- Analytics：提供 burndown、工作量、label 分布、生命週期與交付追蹤。
-- Timeline / Table：用時間軸與表格方式查看所有 Issue。
-- Issue Detail：查看 discussions、related merge requests、linked issues，並可產生 AI 討論摘要。
-- AI Chat：直接對整份 Issue 快取資料提問。
-- Issue Arrange：貼入多個 Issue URL 或 GitLab filter URL，整理原文、跑 LLM 摘要、批次處理、匯出 Excel，並保留歷史紀錄。
-- Reports：產生 Markdown 週報、HTML 報表，並透過 Electron 匯出 PDF。
-- Data Source：可直接抓 GitLab API，也可匯入既有 JSON 檔。
+## 主要功能
+
+- **Connections**：設定 GitLab 或 GitHub、測試連線、切換目前資料來源。
+- **Dashboard / Analytics**：從快取計算狀態、風險、milestone、burndown、workload 與 lifecycle。
+- **Timeline / Table**：以時間軸、行事曆與表格瀏覽 Issues。
+- **Issue Detail**：顯示 comments/discussions、related MR/PR、linked issues 與 AI 摘要。關聯資料在詳情頁 lazy-load。
+- **AI Issue Chat / RAG**：重建 Issue 索引，使用選定 Gemini 模型搜尋並回答問題。
+- **Issue Arrange**：讀取單一 Issue URL 或 filter URL，批次處理、套用 LLM 並匯出 Excel。
+- **Reports**：產生 Markdown、HTML 與 PDF 週報。
+- **Scheduler**：應用程式執行期間排程 daily sync 與 weekly report。
+
+## Provider 支援範圍
+
+| 能力                             | GitLab             | GitHub                               |
+| -------------------------------- | ------------------ | ------------------------------------ |
+| Issue list/detail                | 支援               | 支援，REST list 會排除 Pull Requests |
+| Discussions/comments             | Discussion threads | Flat comments 正規化為 discussions   |
+| Related change                   | Merge Requests     | Pull Requests                        |
+| Dependencies/sub-issues          | Linked issues      | Dependencies、parent、sub-issues     |
+| Issue due date / milestone start | 支援               | GitHub 未提供                        |
+| Pipeline status                  | 支援               | v1 不提供                            |
+| 寫入 Issue                       | 不支援             | 不支援                               |
+
+GitHub v1 僅支援 `github.com` 且為 read-only。Public repository 可匿名連線，但匿名 REST API rate limit 很低，完整同步、關聯載入與 RAG 重建建議使用 GitHub token。
 
 ## 專案結構
 
-- `src/`: Electron main process 與 preload。
-- `frontend/`: partial-based UI、樣式與前端 TypeScript。
-- `backend/`: FastAPI、GitLab client、排程、週報與 issue arrange 邏輯。
-- `docs/`: 產品、架構、操作與 API 文件。
+- `src/`：Electron main process 與 preload bridge。
+- `frontend/`：partial-based UI、styles 與 TypeScript renderer。
+- `backend/`：FastAPI、Issue Provider、GitLab/GitHub clients、RAG、分析、報表與 Arrange。
+- `backend/tests/`：provider、normalizer、config migration 與 API integration tests。
+- `docs/`：產品、架構、API、安全、品質與操作文件。
 
-## 快速開始
+## 本機啟動
+
+Windows 可直接執行 `Start-GitlabTracker.bat`。它會檢查 Node.js 與 Python 3.12、建立 `.venv`、安裝相依套件並執行 `npm.cmd run dev`。
+
+也可手動執行：
 
 ```powershell
-npm install
+npm.cmd install
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r backend\requirements.txt
-npm run dev
+npm.cmd run dev
 ```
 
-啟動後，Electron 會先拉起本機 FastAPI，等 `http://127.0.0.1:8765/api/health` 正常後再載入 UI。
+Electron 啟動後會執行 loopback FastAPI；health endpoint 為 `http://127.0.0.1:8765/api/health`。
 
-## 基本使用流程
+## 使用流程
 
-1. 到 `Connections` 設定 GitLab Base URL、Private Token、Project Path/ID，必要時再填 Gemini API Key。
-2. 按 `Sync Now` 抓取最新 Issue，或改用 `Import JSON` 匯入既有資料。
-3. 在 `Dashboard`、`Analytics`、`Timeline`、`Table` 追蹤整體進度與風險。
-4. 在 `Issue Arrange` 貼入 Issue URL 或 GitLab filter URL，整理 Issue 原文、執行 LLM 摘要，並匯出 Excel。
-5. 需要分享時可產生 Markdown / HTML / PDF 報表。
+1. 在 `Connections` 選擇 GitLab 或 GitHub，填入 project/repository 與 token，執行 `Test Connection`。
+2. 儲存設定後執行 `Sync Now`，或設定 `Import JSON` 取代 provider API。
+3. 從 Dashboard、Analytics、Timeline、Table 與 Issue Detail 檢視資料。
+4. 視需要執行 RAG reindex、AI Chat、Issue Arrange 或產生報表。
 
-## 資料與輸出
+### GitHub 驗證範例
 
-開發模式預設寫入 `backend/data/`，打包後則寫入 Electron `userData/tracker-data/`。
+可使用 public repository `microsoft/markitdown` 驗證 GitHub 同步：
 
-- `config.json`: GitLab 與 Gemini 連線設定。
-- `issues_cache.json`: 同步後的 Issue 快取。
-- `meta.json`: 最後同步、最後報表與排程執行狀態。
-- `reports/`: Markdown 週報。
-- `arrange_exports/`: Issue scrape、LLM 結果與 Excel 匯出歷史。
+- Project Ref：`microsoft/markitdown`
+- 預設 branch：`main`
+- Issue `#2019` 可用於檢查 comment 與 related PR `#2066`
+- Issue list 不應混入 Pull Requests
 
-## 打包
+大型 public repository 容易耗盡匿名 rate limit。若收到 GitHub `403` 或 rate-limit 訊息，請設定 token 並稍後重試。
+
+## 資料與 Secrets
+
+開發環境資料預設在 `backend/data/`；封裝後使用 Electron `userData/tracker-data/`。可用 `GITLAB_TRACKER_DATA_DIR` 覆寫。
+
+- `config.json`：provider、project/repository、排程與 API key 設定。Secrets 仍以明碼存在 backend 檔案。
+- `issues_cache.json`：目前來源的 schema v2 Issue cache。
+- `rag_index.json` / `rag_rebuild_jobs.json`：RAG 索引與工作紀錄。
+- `meta.json`：同步狀態與排程資訊。
+- `reports/` / `arrange_exports/`：報表與 Arrange 匯出。
+
+`GET /api/config` 不回傳 token/API key，frontend localStorage 也不保存 secrets。Loopback API 目前沒有驗證機制，詳見[安全文件](docs/security/SECURITY.md)。
+
+## 驗證
 
 ```powershell
-npm run dist
+.\.venv\Scripts\python.exe -m unittest discover -s backend\tests -v
+npm.cmd run build:ts
+.\.venv\Scripts\python.exe -m compileall -q backend
+.\.venv\Scripts\python.exe -m black --check backend
+npx.cmd prettier --check README.md "docs/**/*.md" frontend/scripts/README.md package.json
+git diff --check
 ```
 
-這會依序：
+目前共有 13 個 Python tests。GitHub Actions 目前只負責 build/release，尚未執行 Python tests 或格式檢查。
 
-1. 編譯 TypeScript 到 `dist/`
-2. 用 PyInstaller 打包後端到 `backend/dist/gitlab-tracker-backend/`
-3. 用 `electron-builder` 產出安裝檔到 `release/`
+## 建置
+
+```powershell
+npm.cmd run dist
+```
+
+此命令會編譯 TypeScript、以 PyInstaller 封裝 backend，並由 `electron-builder` 輸出至 `release/`。
 
 ## 文件
 
-- [文件總覽](docs/README.md)
+- [文件導覽](docs/README.md)
 - [產品文件](docs/product/README.md)
 - [架構文件](docs/architecture/README.md)
-- [操作文件](docs/operations/README.md)
 - [API 規格](docs/specs/API_SPEC.md)
+- [GitHub Provider 規格](docs/specs/GITHUB_PROVIDER.md)
+- [安全文件](docs/security/SECURITY.md)
+- [本機開發](docs/operations/local-setup.md)

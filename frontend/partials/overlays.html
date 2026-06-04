@@ -37,10 +37,10 @@
     <div id="detail-labels" class="detail-labels"></div>
     <div id="detail-delivery" class="detail-delivery"></div>
     <a id="detail-link" class="detail-open-link secondary-btn" href="#" target="_blank"
-      >前往 GitLab</a
+      >前往來源平台</a
     >
     <div class="detail-divider"></div>
-    <h3 class="detail-section-title">相關 MRs</h3>
+    <h3 id="detail-related-change-title" class="detail-section-title">相關 Changes</h3>
     <div id="detail-merge-requests" class="detail-merge-requests">
       <div class="empty-state">等待載入中...</div>
     </div>
@@ -99,6 +99,10 @@
     </div>
   </div>
   <div id="chat-rag-state" class="chat-rag-state" aria-live="polite"></div>
+  <div class="chat-model-area">
+    <label for="chat-rag-model-select">RAG Model</label>
+    <select id="chat-rag-model-select" title="選擇這次 AI Chat 使用的 RAG 模型"></select>
+  </div>
   <div class="chat-input-area">
     <input
       id="chat-input"

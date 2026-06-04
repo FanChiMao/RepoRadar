@@ -9,6 +9,8 @@ import requests
 
 
 class GitLabIssueClient:
+    provider_name = "gitlab"
+
     def __init__(self, base_url: str, token: str, verify_ssl: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
         self.verify_ssl = verify_ssl
@@ -50,7 +52,9 @@ class GitLabIssueClient:
             batch = response.json()
             if not batch:
                 break
-            all_issues.extend(self._normalize_issue(item) for item in batch)
+            all_issues.extend(
+                self._normalize_issue(item, project_ref) for item in batch
+            )
             page += 1
 
         return all_issues
@@ -77,7 +81,7 @@ class GitLabIssueClient:
             batch = response.json()
             if not batch:
                 break
-            results.extend(self._normalize_issue(item) for item in batch)
+            results.extend(self._normalize_issue(item, project_ref) for item in batch)
             if len(batch) < 100:
                 break
             page += 1
@@ -92,7 +96,7 @@ class GitLabIssueClient:
         endpoint = f"{self.base_url}/api/v4/projects/{encoded}/issues/{issue_iid}"
         response = self.session.get(endpoint, timeout=30, verify=self.verify_ssl)
         response.raise_for_status()
-        return self._normalize_issue(response.json())
+        return self._normalize_issue(response.json(), project_ref)
 
     def fetch_issue_discussions(
         self, project_ref: str, issue_iid: int
@@ -166,6 +170,38 @@ class GitLabIssueClient:
             return []
         return [self._normalize_issue_link(issue_iid, item) for item in payload]
 
+    def test_connection(self, project_ref: str) -> dict[str, Any]:
+        encoded = self._encode_project_ref(project_ref)
+        response = self.session.get(
+            f"{self.base_url}/api/v4/projects/{encoded}",
+            timeout=30,
+            verify=self.verify_ssl,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return {
+            "provider": self.provider_name,
+            "source_ref": payload.get("path_with_namespace") or project_ref,
+            "name": payload.get("name"),
+            "private": payload.get("visibility") == "private",
+            "default_branch": payload.get("default_branch"),
+            "rate_limit_remaining": response.headers.get("RateLimit-Remaining"),
+        }
+
+    def capabilities(self) -> dict[str, Any]:
+        return {
+            "issue_due_date": True,
+            "milestone_start_date": True,
+            "milestone_due_date": True,
+            "discussion_threads": True,
+            "related_change_kind": "merge_request",
+            "issue_dependencies": True,
+            "sub_issues": False,
+            "pipeline_status": True,
+            "anonymous_public_read": False,
+            "bounded_concurrency": 1,
+        }
+
     @staticmethod
     def _normalize_discussion(disc: dict[str, Any]) -> dict[str, Any]:
         notes = []
@@ -196,6 +232,8 @@ class GitLabIssueClient:
         return {
             "id": attrs.get("id"),
             "iid": attrs.get("iid"),
+            "kind": "merge_request",
+            "relation_kind": "related",
             "title": attrs.get("title"),
             "state": attrs.get("state"),
             "draft": bool(attrs.get("draft") or attrs.get("work_in_progress")),
@@ -272,7 +310,9 @@ class GitLabIssueClient:
         return payload
 
     @staticmethod
-    def _normalize_issue(attrs: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_issue(
+        attrs: dict[str, Any], source_ref: str | None = None
+    ) -> dict[str, Any]:
         def nested_get(
             obj: dict[str, Any] | None, key: str, default: Any = None
         ) -> Any:
@@ -284,6 +324,10 @@ class GitLabIssueClient:
             "id": attrs.get("id"),
             "iid": attrs.get("iid"),
             "project_id": attrs.get("project_id"),
+            "provider": "gitlab",
+            "source_ref": source_ref or attrs.get("project_id"),
+            "schema_version": 2,
+            "relation_counts_known": True,
             "title": attrs.get("title"),
             "description": attrs.get("description"),
             "state": attrs.get("state"),

@@ -1,31 +1,30 @@
-# Gitlab Tracker Documentation
+# Gitlab Tracker 文件導覽
 
-這份文件集對齊目前的程式碼結構：`src/` 的 Electron main process、`frontend/` 的 partial-based UI，以及 `backend/app.py` 提供的 FastAPI 與 Issue Arrange / Reporting 能力。
+本目錄記錄 Gitlab Tracker 的產品行為、架構、Issue Provider、API、安全、品質與操作方式。實作以 `src/`、`frontend/`、`backend/` 與 `backend/tests/` 為準。
 
-## 文件地圖
+## 文件索引
 
-| 路徑                                             | 內容                                         | 適合誰           |
-| ------------------------------------------------ | -------------------------------------------- | ---------------- |
-| [architecture/README.md](architecture/README.md) | 執行架構、資料模型、關鍵設計決策             | 開發者、AI agent |
-| [product/README.md](product/README.md)           | 產品定位、畫面流程、使用情境                 | PM、設計、開發   |
-| [operations/README.md](operations/README.md)     | 本機啟動、打包、疑難排解                     | 開發者、維運     |
-| [specs/API_SPEC.md](specs/API_SPEC.md)           | FastAPI endpoint 與 request / response shape | 前後端開發者     |
-| [quality/NFR.md](quality/NFR.md)                 | 非功能需求與品質目標                         | PM、QA、開發     |
-| [sercurity/SERCURITY.md](sercurity/SERCURITY.md) | 安全性與敏感資料處理說明                     | 開發者、維運     |
-| [CONTRIBUTING.md](CONTRIBUTING.md)               | 提交流程與開發慣例                           | Contributor      |
-| [GLOSSARY.md](GLOSSARY.md)                       | 專案術語                                     | 所有人           |
+| 分類       | 文件                                                                                                                                                                                                                                     |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 產品       | [product/README.md](product/README.md)、[product/PRD.md](product/PRD.md)、[product/project-flow.md](product/project-flow.md)、[product/user-flow.md](product/user-flow.md)                                                               |
+| 架構       | [architecture/README.md](architecture/README.md)、[architecture/runtime-overview.md](architecture/runtime-overview.md)、[architecture/data-model.md](architecture/data-model.md)                                                         |
+| 決策       | [ADR 0001](architecture/decisions/0001-electron-fastapi-split.md)、[ADR 0002](architecture/decisions/0002-no-frontend-framework.md)、[ADR 0003](architecture/decisions/0003-issue-provider-abstraction.md)                               |
+| 規格       | [specs/API_SPEC.md](specs/API_SPEC.md)、[specs/GITHUB_PROVIDER.md](specs/GITHUB_PROVIDER.md)                                                                                                                                             |
+| 操作       | [operations/README.md](operations/README.md)、[operations/local-setup.md](operations/local-setup.md)、[operations/build-and-release.md](operations/build-and-release.md)、[operations/troubleshooting.md](operations/troubleshooting.md) |
+| 安全與品質 | [security/SECURITY.md](security/SECURITY.md)、[quality/NFR.md](quality/NFR.md)                                                                                                                                                           |
+| 開發       | [CONTRIBUTING.md](CONTRIBUTING.md)、[GLOSSARY.md](GLOSSARY.md)                                                                                                                                                                           |
 
 ## 建議閱讀順序
 
-1. 先看 [README.md](../README.md) 了解整體用途與啟動方式。
-2. 看 [product/user-flow.md](product/user-flow.md) 熟悉目前 UI 與主要操作。
-3. 看 [architecture/runtime-overview.md](architecture/runtime-overview.md) 與 [architecture/data-model.md](architecture/data-model.md) 了解重構後的實作方式。
-4. 需要串接或修改前後端資料時，再看 [specs/API_SPEC.md](specs/API_SPEC.md)。
-5. 需要本機執行或打包時，參考 [operations/local-setup.md](operations/local-setup.md) 與 [operations/build-and-release.md](operations/build-and-release.md)。
+1. 從[根目錄 README](../README.md)了解功能與啟動方式。
+2. 閱讀[產品流程](product/project-flow.md)與[使用者流程](product/user-flow.md)。
+3. 閱讀[runtime overview](architecture/runtime-overview.md)、[data model](architecture/data-model.md)與[Issue Provider ADR](architecture/decisions/0003-issue-provider-abstraction.md)。
+4. 修改 backend route 或 provider 前先檢查[API 規格](specs/API_SPEC.md)與[GitHub Provider 規格](specs/GITHUB_PROVIDER.md)。
+5. 開發與發版前依[本機設定](operations/local-setup.md)、[貢獻指南](CONTRIBUTING.md)與[安全文件](security/SECURITY.md)驗證。
 
-## 本次同步重點
+## 文件維護原則
 
-- 文件已改為使用目前的 `frontend/` 目錄，而不是舊的 `renderer/` 描述。
-- 補上 `Issue Arrange`、批次整理、Excel 匯出與歷史紀錄。
-- 補上 `Dashboard / Analytics / Timeline / Table / AI Chat` 相關流程。
-- 補上 `arrange_exports/`、HTML/PDF 報表與最新 FastAPI endpoint。
+- 產品名稱、套件名稱與 executable 維持 `Gitlab Tracker`。
+- 通用行為使用 Issue Provider、MR/PR 等中性用語；僅在平台專屬行為使用 GitLab 或 GitHub。
+- API、config、cache schema、模型清單、測試數量與 CI 行為變更時，需同步更新相關文件。
+- `.github/skills/**` 為通用設計技能資料，不屬於本專案開發文件。

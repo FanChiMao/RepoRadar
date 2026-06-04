@@ -1,70 +1,52 @@
 # Build And Release
 
-## 1. 打包指令
-
-正式打包使用：
+## 本機建置
 
 ```powershell
-npm run dist
+npm.cmd run dist
 ```
 
-流程如下：
+流程：
 
-1. `npm run build:ts`
-2. `npm run pack:backend`
-3. `electron-builder`
+1. `npm.cmd run build:ts` 編譯 `src/**/*.ts` 與 `frontend/**/*.ts` 至 `dist/`。
+2. `npm.cmd run pack:backend` 使用 PyInstaller 封裝 `backend/app.py`。
+3. `electron-builder` 產生 `release/Gitlab Tracker Setup <version>.exe` 與 `release/win-unpacked/`。
 
-## 2. 各段輸出
+產品名稱、package name、appId 與 executable 均維持 `Gitlab Tracker` 現況。
 
-### TypeScript
+## 封裝後路徑
 
-- 原始碼：`src/**/*.ts`、`frontend/**/*.ts`
-- 輸出：`dist/`
+- Backend executable：`resources/backend/dist/gitlab-tracker-backend/`
+- App 資料：`app.getPath('userData')/tracker-data`
+- Frontend：隨 app files 封裝
 
-### Python Backend
+`nsis.deleteAppDataOnUninstall=true`，解除安裝會刪除 userData 內 tracker data。
 
-- 入口：`backend/app.py`
-- 指令：`python -m PyInstaller --noconfirm --onedir --name gitlab-tracker-backend ...`
-- 輸出：`backend/dist/gitlab-tracker-backend/`
+## GitHub Actions 現況
 
-### Electron Installer
+- `.github/workflows/main.yml` 安裝依賴、建置 TypeScript 並執行 `npm run dist`。
+- `.github/workflows/release.yml` 在 release/tag 流程建置與發佈。
+- 目前 workflows **不執行** Python tests、compileall、Black 或 Prettier check；這些仍需在本機驗證。
 
-- 設定來源：`package.json > build`
-- 輸出目錄：`release/`
-- Windows target：`nsis`
+本次文件同步不修改 workflows。
 
-## 3. 打包後執行方式
+## 發版前檢查
 
-打包版啟動時：
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s backend\tests -v
+npm.cmd run build:ts
+.\.venv\Scripts\python.exe -m compileall -q backend
+.\.venv\Scripts\python.exe -m black --check backend
+npx.cmd prettier --check README.md "docs/**/*.md" frontend/scripts/README.md package.json
+git diff --check
+npm.cmd run dist
+```
 
-- Electron main process 從 `resources/backend/dist/gitlab-tracker-backend/` 啟動後端
-- 後端資料目錄改為 `app.getPath('userData')/tracker-data`
-- `frontend/` 會隨 app 一起打包，不走 `extraResources`
+安裝封裝版後確認：
 
-## 4. 產物位置
-
-常見產物：
-
-- `backend/dist/gitlab-tracker-backend/gitlab-tracker-backend.exe`
-- `release/Gitlab Tracker Setup <version>.exe`
-- `release/win-unpacked/`
-
-## 5. 發版前檢查
-
-1. 更新 `package.json` 版本號
-2. 執行 `npm run format:check`
-3. 執行 `npm run dist`
-4. 安裝打包後的 App，確認：
-   - 可以正常開啟
-   - `/api/health` 正常
-   - GitLab 連線設定可儲存
-   - `Sync Now` 可用
-   - `Issue Arrange` 可 preview / process / export Excel
-   - HTML 轉 PDF 正常
-   - 外部 GitLab 連結可打開
-
-## 6. 常見打包注意事項
-
-- PyInstaller 需要帶 Uvicorn hidden imports，這已經寫在 `package.json` 的 `pack:backend`。
-- 若打包版後端啟動失敗，先看 `release/win-unpacked` 執行時的 stderr。
-- `nsis.deleteAppDataOnUninstall = true`，解除安裝會刪掉 userData 內的 `tracker-data`。
+- App 與 `/api/health` 正常。
+- GitLab/GitHub connection test、儲存、同步與 provider 切換正常。
+- GitLab MR/links 與 GitHub PR/dependencies/sub-issues 正常。
+- RAG reindex/search/chat 正常。
+- Arrange preview/process/export 同時涵蓋 GitLab/GitHub URLs。
+- Markdown/HTML/PDF 與外部連結正常。

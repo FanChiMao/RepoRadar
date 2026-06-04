@@ -1,18 +1,11 @@
 # Operations
 
-這一區聚焦在「怎麼把目前版本跑起來、打包、排除問題」。
+本區說明本機設定、GitLab/GitHub 連線、測試、封裝、發版與疑難排解。
 
-## 文件導覽
+| 文件                                         | 內容                                                 |
+| -------------------------------------------- | ---------------------------------------------------- |
+| [local-setup.md](local-setup.md)             | Windows 開發環境、Connections、測試與驗證            |
+| [build-and-release.md](build-and-release.md) | TypeScript、PyInstaller、electron-builder 與 CI 現況 |
+| [troubleshooting.md](troubleshooting.md)     | 啟動、provider、rate limit、RAG、Arrange 與報表問題  |
 
-| 文件                                         | 內容                                               |
-| -------------------------------------------- | -------------------------------------------------- |
-| [local-setup.md](local-setup.md)             | 本機開發環境與啟動流程                             |
-| [build-and-release.md](build-and-release.md) | TypeScript、PyInstaller、electron-builder 打包流程 |
-| [troubleshooting.md](troubleshooting.md)     | 啟動、同步、AI、報表與 Issue Arrange 常見問題      |
-
-## 適用情境
-
-- 新同事要在本機跑起來
-- 需要驗證 Electron + FastAPI 是否正確串接
-- 需要產出安裝檔
-- 需要查資料寫去哪裡、報表在哪裡、Issue Arrange 歷史在哪裡
+資料路徑、cache 與 secret 行為請參考 [data model](../architecture/data-model.md)與[安全文件](../security/SECURITY.md)。
