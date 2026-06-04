@@ -1,84 +1,54 @@
 # Project Flow
 
-這份文件描述 Gitlab Tracker 目前的端到端工作流，從專案接線、同步資料，到 Issue 整理與報表輸出。
+## 1. Connections
 
-## 1. 建立資料來源
+使用者在 `Connections` 選擇 GitLab 或 GitHub，填入 base URL、project ref、token 與 Gemini API key，並先執行 connection test。一次只保存一個 active provider，但兩個 provider 各自保留設定與最近 project ref。
 
-使用者在 `Connections` 頁面設定：
+若設定 `Import JSON`，同步時會優先使用本機檔案，不呼叫 provider API。
 
-- `GitLab Base URL`
-- `Private Token`
-- `Project Path / ID`
-- 可選的 `Gemini API Key`
-- 可選的 `Import JSON`
+## 2. Sync 與 Cache
 
-如果有 `Import JSON`，同步時會優先讀取檔案；否則就直接打 GitLab API。
+```mermaid
+flowchart LR
+  UI["Sync Now"] --> Fetch["POST /api/fetch"]
+  Fetch --> Import{"Import JSON?"}
+  Import -->|Yes| JSON["Read JSON"]
+  Import -->|No| Provider["Active Issue Provider"]
+  Provider --> Normalize["Normalize schema v2"]
+  JSON --> Normalize
+  Normalize --> Cache["issues_cache.json"]
+  Cache --> Views["Dashboard / Analytics / Timeline / Table / Reports / RAG"]
+```
 
-## 2. 同步與快取
+同步會比較前次 `user_notes_count` 並設定 `has_new_discussions`。切換 provider、base URL 或 project ref 時會清除 Issue 與 RAG cache。
 
-按下 `Sync Now` 後：
+## 3. Dashboard 與 Issue Detail
 
-1. 前端呼叫 `POST /api/fetch`
-2. 後端抓取 GitLab issue list，或載入匯入 JSON
-3. 將結果寫入 `issues_cache.json`
-4. 比對前一次 `user_notes_count`，補上 `has_new_discussions`
-5. 更新 `meta.json.last_sync`
+Dashboard、Analytics、Timeline 與 Table 讀取 normalized cache。開啟 Issue Detail 時：
 
-這份快取就是後續 Dashboard、Analytics、Timeline、Chat 與報表的共同資料來源。
+- GitLab 載入 discussions、related MR、linked issues。
+- GitHub 載入 comments、related PR、dependencies、parent、sub-issues。
+- UI 依 provider 顯示 MR/PR。
+- GitHub relation 採 lazy-load；未載入前 `relation_counts_known=false`。
+- GitHub 無 due date、milestone start date、pipeline 時顯示「GitHub 未提供」。
 
-## 3. 專案盤點
+## 4. RAG 與 AI Chat
 
-同步完成後，使用者通常會先在 `Dashboard` 盤點：
+1. 從目前 cache 執行 RAG reindex。
+2. Job 狀態與索引分別寫入 `rag_rebuild_jobs.json` 與 `rag_index.json`。
+3. Chat 可使用 RAG search results 或簡化 Issue list。
+4. 使用者選擇偏好模型，backend 依 candidates fallback。
 
-- 本週新增 / 更新 / 開啟中 / 風險數量
-- 本週新增 Issue 清單
-- Focus progress 與風險卡片
-- 逾期與即將到期提醒
+## 5. Issue Arrange
 
-需要更深入時，再切換到：
+1. 輸入 GitLab/GitHub 單一 Issue URL 或 repository filter URL。
+2. Preview/resolve-filter 取得 Issue 清單。
+3. Provider 讀取 Issue 與 comments/discussions並組合 raw text。
+4. 可使用 Arrange 模型處理內容。
+5. 保存 scrape/result，並可匯出 Excel。
 
-- `Analytics` 看 burndown、工作量、交付與 lifecycle
-- `Timeline` 看 milestone / assignee / module 的時間分布
-- `Table` 做條件篩選與排序
+## 6. Reports 與 Scheduler
 
-## 4. 深入單一 Issue
-
-從 Dashboard、Table 或 Timeline 點進 Issue 後，使用者可看到：
-
-- 基本欄位：state、module、assignees、milestone、建立與更新時間
-- `related merge requests`
-- `linked issues`
-- `discussions`
-- `AI summary`
-
-這個流程主要用來回答「這張 Issue 現在到底進到哪裡」。
-
-## 5. Issue Arrange 工作流
-
-當使用者需要整理某些 Issue 給主管、跨部門或會議使用時，會進入 `Issue Arrange`：
-
-1. 貼入多個 Issue URL，或一個 GitLab filter URL
-2. `Preview` 確認實際要處理的 Issue 清單
-3. 選 prompt template 或直接修改 system prompt
-4. 執行單筆 / 批次整理
-5. 取得兩份輸出：
-   - scrape：整理前的原始 Issue 文本
-   - result：LLM 生成的摘要結果
-6. 需要表格時再匯出 Excel
-7. 所有輸出都可在歷史面板重開、預覽與開檔
-
-## 6. 對外輸出
-
-當專案狀態確認後，可進一步輸出：
-
-- `POST /api/report/weekly`：Markdown 週報
-- `GET /api/report/html`：帶樣式 HTML
-- Electron `printToPDF`：PDF
-- `Issue Arrange -> Export Excel`
-
-## 7. 背景排程
-
-後端內建 daily sync 與 weekly report 排程，但它是跟著 App 進程存活的背景執行緒：
-
-- App 有開著才會跑
-- 若需要固定時間保證執行，仍建議使用 OS 層級排程
+- `POST /api/report/weekly` 產生 Markdown。
+- `GET /api/report/html` 產生 HTML，由 Electron 匯出 PDF。
+- Scheduler 在 App 開啟期間執行 daily sync / weekly report，使用 `meta.json.scheduler` 同日去重。

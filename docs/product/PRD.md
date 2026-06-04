@@ -1,90 +1,77 @@
 # Gitlab Tracker Product Requirements Document
 
-## 1. 問題定義
+## 產品目標
 
-團隊使用 GitLab 管理工作時，常見的痛點不是「沒有資料」，而是資料分散在 Issue、discussion、MR、label、milestone 與不同人的更新節奏中。
+Gitlab Tracker 讓 PM、Tech Lead 與工程師從 GitLab 或 GitHub Issue 資料建立一致的專案視圖，降低跨 Issue、comments/discussions、MR/PR、milestone 與報表整理成本。
 
-Gitlab Tracker 目標是縮短以下工作：
+## 使用者
 
-- PM 每週整理專案狀態與風險。
-- Tech Lead 追蹤 milestone、工作量與逾期風險。
-- 工程師快速回顧單一 Issue 的現況、阻塞與相關變更。
-- 需要對外說明時，將一批 Issue 轉成可閱讀的整理稿或 Excel。
+| Persona          | 主要需求                                                            |
+| ---------------- | ------------------------------------------------------------------- |
+| Project Manager  | 追蹤整體狀態、風險、milestone、週報與匯出                           |
+| Tech Lead        | 檢查 blocker、relations、burndown、workload 與 delivery follow-up   |
+| Engineer         | 查看單一 Issue 的內容、comments/discussions、linked issues 與 MR/PR |
+| Analyst/Reviewer | 使用 RAG Chat、Arrange 與報表整理 Issue 資料                        |
 
-## 2. 目標使用者
+## In Scope
 
-| Persona                | 需求                                                                         |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| Project Manager        | 快速掌握本週新增、風險、工作量與可分享的報表                                 |
-| Tech Lead              | 追蹤 milestone burndown、MR 連結狀態、blocked issue 與 lifecycle             |
-| Engineer               | 看單一 Issue 的完整脈絡，包含 discussions、linked issues、相關 MR 與 AI 摘要 |
-| Stakeholder / Reviewer | 透過整理後的 Issue 摘要、週報與 PDF 理解進度                                 |
+- GitLab 與 GitHub Connections、connection test、一次啟用一個來源。
+- Provider API 或 Import JSON 同步；source identity 隔離 cache。
+- Dashboard、Analytics、Timeline、Table 與 Issue Detail。
+- GitLab discussions/MR/links；GitHub comments/related PR/dependencies/parent/sub-issues。
+- RAG index/search 與 AI Issue Chat，可選擇模型與 fallback candidates。
+- Discussion summary、Issue Arrange、Excel、Markdown/HTML/PDF。
+- App 內 daily sync 與 weekly report 排程。
 
-## 3. 產品目標
+## Provider 限制與降級
 
-- 把 GitLab 專案狀態整理時間從小時級降到分鐘級。
-- 降低「需要讀很多 discussion 才知道 Issue 在做什麼」的成本。
-- 提供可重複使用的 Issue 整理流程，支援 batch、模板與歷史輸出。
-- 保持桌面 App 模式，讓內網或自架 GitLab 專案也能使用。
+| 項目                 | GitLab     | GitHub               |
+| -------------------- | ---------- | -------------------- |
+| Project ref          | path 或 ID | `owner/repo`         |
+| Related change       | MR         | PR                   |
+| Discussion           | Threads    | Flat comments 正規化 |
+| Issue due date       | 可用       | 未提供               |
+| Milestone start date | 可用       | 未提供               |
+| Pipeline status      | 可用       | v1 未提供            |
+| Relations            | 可預載     | 詳情頁 lazy-load     |
 
-## 4. In Scope
+GitHub v1 僅支援 `github.com`、read-only。Public repo 可匿名同步，但大型 repo 建議使用 token。
 
-### 核心追蹤
+## Out of Scope
 
-- GitLab Base URL、Token、Project Path/ID 設定
-- 直接抓 GitLab API 或匯入現有 JSON
-- 本機快取 Issue，支援 dashboard、analytics、timeline、table
-- 單一 Issue 詳情查看：discussion、related merge requests、linked issues
+- 寫入、建立或修改 GitLab/GitHub Issue、MR、PR。
+- GitHub Enterprise Server。
+- 讀取原始碼、commits、releases、contributors 或 Actions checks。
+- 多 provider/repository 同時聚合。
+- App 關閉後仍持續執行的系統服務排程。
+- Web SaaS 與多人權限管理。
 
-### 分析與輸出
+## 功能需求
 
-- Dashboard KPI 與風險卡片
-- Analytics：burndown、workload、label distribution、lifecycle、delivery follow-ups
-- Timeline / Calendar 檢視
-- Markdown 週報
-- HTML 報表與 PDF 匯出
+| ID  | 功能                                                      | 優先級 |
+| --- | --------------------------------------------------------- | ------ |
+| F-1 | Connections、provider/repository 設定與 connection test   | P0     |
+| F-2 | Provider/Import JSON 同步與 cache isolation               | P0     |
+| F-3 | Dashboard、Analytics、Timeline、Table                     | P0     |
+| F-4 | Issue Detail、動態 MR/PR、comments/discussions、relations | P0     |
+| F-5 | Markdown、HTML、PDF 報表                                  | P0     |
+| F-6 | RAG index/search 與 AI Chat                               | P1     |
+| F-7 | Issue/filter URL Arrange、LLM 處理與歷史                  | P1     |
+| F-8 | Excel 匯出                                                | P1     |
+| F-9 | Provider capabilities 與缺值降級 UI                       | P1     |
 
-### AI 功能
+## 模型選擇
 
-- AI 討論摘要
-- AI Chat over Issues
-- Issue Arrange 工作區
-- 自訂 arrange prompt
-- LLM model fallback
+- Chat/RAG：`gemini-3.5-flash`、`gemini-2.5-pro`、`gemma-4-26b-a4b-it`。
+- Arrange：`gemini-2.5-pro`、`gemini-3.5-flash`。
+- Discussion summary：`gemini-2.5-flash`、`gemma-4-31b-it`。
 
-### Issue Arrange 工作區
+## 驗收
 
-- 貼入多個 Issue URL
-- 貼入 GitLab filter URL，自動展開成 Issue 清單
-- 單筆或批次執行 scrape + LLM 整理
-- 匯出 Excel
-- 保存 scrape / result / excel 歷史紀錄
-
-## 5. Out of Scope
-
-- 修改 GitLab Issue 內容
-- 多專案聚合 dashboard
-- 雲端多人協作與帳號系統
-- 行動版或 Web SaaS 版本
-
-## 6. 主要功能清單
-
-| ID   | 功能                                                       | 優先級 |
-| ---- | ---------------------------------------------------------- | ------ |
-| F-1  | GitLab 連線設定與 project ref 歷史                         | P0     |
-| F-2  | 同步 / 匯入 Issue 快取                                     | P0     |
-| F-3  | Dashboard、Analytics、Timeline、Table                      | P0     |
-| F-4  | 單一 Issue 詳情與 AI 討論摘要                              | P0     |
-| F-5  | Markdown / HTML / PDF 報表                                 | P0     |
-| F-6  | AI Chat over cached issues                                 | P1     |
-| F-7  | Issue Arrange：URL preview、filter resolve、batch LLM 整理 | P1     |
-| F-8  | Excel 匯出與 arrange 歷史檢視                              | P1     |
-| F-9  | UI 偏好設定：主題、縮放、模型清單                          | P2     |
-| F-10 | 外部連結瀏覽器偏好                                         | P3     |
-
-## 7. 成功指標
-
-- 使用者可在一次同步後，於同一個畫面完成專案風險盤點。
-- 使用者可在 5 分鐘內將一批 Issue 整理成可分享輸出。
-- 報表輸出不需額外手工整理 Markdown。
-- AI 輸出引用 Issue 時能以 `#IID` 為主，降低誤解。
+- `microsoft/markitdown` 同步不混入 Pull Requests；Issue `#2019` 顯示 comment 與 related PR `#2066`。
+- GitLab 舊 config 自動 migration，原功能維持。
+- 切換 provider/repository 後 Issue 與 RAG cache 不混用。
+- GitHub 缺少 due date 時不產生錯誤逾期或 burndown 判定。
+- Arrange 支援 GitLab/GitHub Issue 與 filter URLs。
+- 401、403、404、429、無 token與 rate-limit exhaustion 有明確錯誤。
+- Python tests、TypeScript build、compileall、Black、Prettier 與 diff check 通過。

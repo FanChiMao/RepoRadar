@@ -10,22 +10,27 @@
   <div class="tool-grid">
     <section class="panel config-panel">
       <div class="section-title-row">
-        <h2>GitLab 與 AI</h2>
+        <h2>Issue Provider 與 AI</h2>
         <button id="btn-load-config" class="ghost-btn">重新載入</button>
       </div>
 
-      <label>GitLab Base URL</label>
+      <label>Active Provider</label>
+      <select id="active-provider">
+        <option value="gitlab">GitLab</option>
+        <option value="github">GitHub</option>
+      </select>
+
+      <label id="source-base-url-label">GitLab Base URL</label>
       <input id="gitlab-url" placeholder="http://gitlab.company.local" />
 
-      <label>Private Token</label>
+      <label id="source-token-label">GitLab Token</label>
       <input id="gitlab-token" type="password" placeholder="glpat-..." />
       <small class="field-hint">
-        可從
-        <a id="token-hint-link" href="#">GitLab Personal Access Tokens</a> 產生，至少需要
-        <code>read_api</code> 權限。
+        <a id="token-hint-link" href="#">開啟 Token 設定頁</a>。
+        <span id="token-hint-copy">至少需要 <code>read_api</code> 權限。</span>
       </small>
 
-      <label>Project Path / ID</label>
+      <label id="source-project-label">Project Path / ID</label>
       <input
         id="project-ref"
         list="project-ref-history-list"
@@ -49,6 +54,7 @@
 
       <div class="button-row">
         <button id="btn-save-config" class="primary-btn">儲存設定</button>
+        <button id="btn-test-connection" class="ghost-btn">測試連線</button>
         <button id="btn-sync-now" class="secondary-btn">立即同步</button>
       </div>
     </section>
@@ -64,11 +70,11 @@
         </div>
         <div class="info-card">
           <strong>Issue 整理</strong>
-          <p>會直接使用這裡的 GitLab Token 與 Gemini API Key，不需要另外重複輸入。</p>
+          <p>會使用目前選擇的 GitLab 或 GitHub connection 與 Gemini API Key。</p>
         </div>
         <div class="info-card">
           <strong>Import JSON</strong>
-          <p>如果你想離線檢視 Dashboard，可用本機 JSON 取代即時 GitLab API。</p>
+          <p>如果你想離線檢視 Dashboard，可用本機 JSON 取代即時 provider API。</p>
         </div>
       </div>
     </section>

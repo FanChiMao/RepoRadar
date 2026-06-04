@@ -1,18 +1,27 @@
 # Architecture
 
-這裡描述 Gitlab Tracker 現在的執行架構、資料落地方式，以及跟重構後程式碼對應的主要模組。
+Gitlab Tracker 採 Electron main process、partial-based frontend 與 Python FastAPI backend 三層架構。GitLab 與 GitHub 透過共用 Issue Provider contract 接入；Dashboard、Analytics、RAG、Arrange 與報表主要消費 normalized cache。
 
 ## 文件導覽
 
-| 文件                                       | 內容                                                                                     |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| [runtime-overview.md](runtime-overview.md) | Electron、frontend partials、FastAPI 與排程如何一起工作                                  |
-| [data-model.md](data-model.md)             | `config.json`、`issues_cache.json`、`meta.json`、`arrange_exports/` 與前端 local storage |
-| [decisions/](decisions/)                   | 保留的重要架構決策記錄                                                                   |
+| 文件                                                     | 內容                                               |
+| -------------------------------------------------------- | -------------------------------------------------- |
+| [runtime-overview.md](runtime-overview.md)               | Processes、模組責任、provider 與主要資料流         |
+| [data-model.md](data-model.md)                           | Config、Issue schema v2、RAG、meta 與 localStorage |
+| [ADR 0001](decisions/0001-electron-fastapi-split.md)     | Electron + FastAPI 雙 process                      |
+| [ADR 0002](decisions/0002-no-frontend-framework.md)      | Vanilla TypeScript 與 partial-based UI             |
+| [ADR 0003](decisions/0003-issue-provider-abstraction.md) | Issue Provider 抽象與 cache identity               |
 
-## 當前實作重點
+## 當前架構重點
 
-- UI 已改成 `frontend/index.html + partials + bootstrap.js + legacy-app.ts` 組合。
-- Electron main process 仍負責啟動後端、檔案選擇、開外部連結與 PDF 匯出。
-- FastAPI 是所有資料與商業邏輯的中心，包含同步、分析、AI、Issue Arrange 與報表。
-- 背景排程是 App 內的 daemon thread，不是獨立服務。
+- `backend/core/provider.py` 定義 `IssueProvider` protocol、factory 與 capabilities。
+- GitLab/GitHub client 將平台資料正規化為共用 Issue shape；一次只啟用一個來源。
+- GitHub 關聯資料在 Issue Detail lazy-load，避免列表大量請求觸發 secondary rate limit。
+- 切換 provider、base URL 或 source ref 會清除 Issue cache、RAG index/jobs 與 `last_sync`。
+- Electron main 負責 backend lifecycle、檔案/連結與 PDF；業務資料透過 loopback HTTP。
+
+## 已知技術債
+
+- `backend/app.py` 仍包含 routing、AI、analytics、同步與 HTML 報表組裝，並非單純 composition root。
+- `frontend/scripts/legacy-app.ts` 已超過 6,000 行，包含大部分 renderer 狀態與 provider-aware UI。
+- Loopback API 無驗證；backend secrets 仍以明碼寫入 `config.json`。

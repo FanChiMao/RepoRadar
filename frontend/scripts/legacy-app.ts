@@ -1,10 +1,23 @@
 ﻿type AppConfig = {
-  gitlab_url: string;
-  token: string;
-  project_ref: string;
-  project_ref_history: string[];
+  active_provider: 'gitlab' | 'github';
+  connections: Record<
+    'gitlab' | 'github',
+    {
+      base_url: string;
+      token: string;
+      token_configured: boolean;
+      project_ref: string;
+      project_ref_history: string[];
+      verify_ssl: boolean;
+    }
+  >;
   import_file: string;
   gemini_api_key: string;
+  gemini_api_key_configured: boolean;
+  enable_daily_sync: boolean;
+  daily_sync_time: string;
+  enable_weekly_report: boolean;
+  weekly_report_time: string;
 };
 
 type ChatSource = {
@@ -65,15 +78,26 @@ const MAX_SIDEBAR_WIDTH = 360;
 const LOCAL_CONFIG_CACHE_KEY = 'gitlab-tracker:config-cache';
 const UI_PREFERENCES_KEY = 'gitlab-tracker:ui-preferences';
 const ARRANGE_PROMPT_TEMPLATES_KEY = 'gitlab-tracker:arrange-prompt-templates';
-const DEFAULT_GEMINI_MODEL_LIST = ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemma-4-31b-it'];
-const DEFAULT_GEMINI_MODEL = 'gemma-4-31b-it';
+const DEFAULT_GEMINI_MODEL_LIST = [
+  'gemini-2.5-pro',
+  'gemini-3.5-flash',
+  'gemini-2.5-flash',
+  'gemma-4-31b-it',
+  'gemma-4-26b-a4b-it',
+];
+const ARRANGE_GEMINI_MODEL_LIST = ['gemini-2.5-pro', 'gemini-3.5-flash'];
+const CHAT_RAG_GEMINI_MODEL_LIST = ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemma-4-26b-a4b-it'];
+const DISCUSSION_SUMMARY_GEMINI_MODEL_LIST = ['gemini-2.5-flash', 'gemma-4-31b-it'];
+const DEFAULT_GEMINI_MODEL = ARRANGE_GEMINI_MODEL_LIST[0];
+const DEFAULT_CHAT_RAG_MODEL = CHAT_RAG_GEMINI_MODEL_LIST[0];
 const DEFAULT_UI_PREFERENCES = {
   theme: 'dark',
   scale: 100,
   sidebarWidth: 304,
   geminiModel: DEFAULT_GEMINI_MODEL,
+  chatRagModel: DEFAULT_CHAT_RAG_MODEL,
   geminiModelList: [...DEFAULT_GEMINI_MODEL_LIST],
-  arrangePrompt: `你是一位資深技術 PM，請根據提供的 GitLab Issue 原始資料，整理成清楚、可追蹤的中文摘要。
+  arrangePrompt: `你是一位資深技術 PM，請根據提供的 Issue 原始資料，整理成清楚、可追蹤的中文摘要。
 
 請用以下段落輸出：
 ## 問題摘要
@@ -100,6 +124,10 @@ type DashboardResponse = {
 
 type IssueItem = {
   iid: number;
+  provider: 'gitlab' | 'github' | 'import';
+  source_ref: string | null;
+  schema_version: number;
+  relation_counts_known: boolean;
   title: string;
   state: string;
   module: string | null;
@@ -161,6 +189,8 @@ type MergeRequestInfo = {
   author_username: string;
   author_avatar_url: string;
   head_pipeline_status: string | null;
+  kind?: 'merge_request' | 'pull_request';
+  relation_kind?: string;
 };
 
 type LinkedIssueRef = {
@@ -266,6 +296,7 @@ type UiPreferences = {
   scale: number;
   sidebarWidth: number;
   geminiModel: GeminiModel;
+  chatRagModel: GeminiModel;
   geminiModelList: string[];
   arrangePrompt: string;
 };
@@ -324,6 +355,7 @@ type ArrangeHistoryFileResponse = {
 
 /* ── State ── */
 const state = {
+  currentConfig: null as AppConfig | null,
   allIssues: [] as IssueItem[],
   mergeRequestsByIid: new Map<number, MergeRequestInfo[]>(),
   issueLinksByIid: new Map<number, LinkedItemInfo[]>(),
@@ -402,7 +434,7 @@ function clampSidebarWidth(value: number): number {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(value)));
 }
 
-function sanitizeGeminiModelList(value: unknown): string[] {
+function normalizeGeminiModelList(value: unknown): string[] {
   const rawValues = Array.isArray(value)
     ? value
     : typeof value === 'string'
@@ -411,17 +443,35 @@ function sanitizeGeminiModelList(value: unknown): string[] {
   const uniqueModels: string[] = [];
   for (const rawValue of rawValues) {
     const normalized = String(rawValue || '').trim();
-    if (normalized && !uniqueModels.includes(normalized)) {
+    if (
+      normalized &&
+      DEFAULT_GEMINI_MODEL_LIST.includes(normalized) &&
+      !uniqueModels.includes(normalized)
+    ) {
       uniqueModels.push(normalized);
     }
   }
-  return uniqueModels.length ? uniqueModels : [...DEFAULT_GEMINI_MODEL_LIST];
+  return uniqueModels;
 }
 
-function coerceGeminiModel(value: string | undefined, candidates: string[]): GeminiModel {
+function sanitizeGeminiModelList(value: unknown): string[] {
+  const uniqueModels = normalizeGeminiModelList(value);
+  for (const model of DEFAULT_GEMINI_MODEL_LIST) {
+    if (!uniqueModels.includes(model)) {
+      uniqueModels.push(model);
+    }
+  }
+  return uniqueModels;
+}
+
+function coerceGeminiModel(
+  value: string | undefined,
+  candidates: string[],
+  fallback = candidates[0] || DEFAULT_GEMINI_MODEL,
+): GeminiModel {
   const normalized = String(value || '').trim();
-  if (normalized) return normalized;
-  return candidates[0] || DEFAULT_GEMINI_MODEL;
+  if (normalized && candidates.includes(normalized)) return normalized;
+  return fallback;
 }
 
 function createDefaultUiPreferences(): UiPreferences {
@@ -431,10 +481,14 @@ function createDefaultUiPreferences(): UiPreferences {
   };
 }
 
-function syncGeminiModelSelect(select: HTMLSelectElement | null): void {
+function syncGeminiModelSelect(
+  select: HTMLSelectElement | null,
+  selectedValue = state.uiPreferences.geminiModel,
+  candidates = state.uiPreferences.geminiModelList,
+): void {
   if (!select) return;
-  const models = sanitizeGeminiModelList(state.uiPreferences.geminiModelList);
-  const selectedModel = coerceGeminiModel(state.uiPreferences.geminiModel, models);
+  const models = normalizeGeminiModelList(candidates);
+  const selectedModel = coerceGeminiModel(selectedValue, models);
   select.replaceChildren(
     ...models.map((model) => new Option(model, model, false, model === selectedModel)),
   );
@@ -453,7 +507,12 @@ function readUiPreferences(): UiPreferences {
       sidebarWidth: clampSidebarWidth(
         Number(parsed.sidebarWidth) || DEFAULT_UI_PREFERENCES.sidebarWidth,
       ),
-      geminiModel: coerceGeminiModel(parsed.geminiModel, geminiModelList),
+      geminiModel: coerceGeminiModel(parsed.geminiModel, ARRANGE_GEMINI_MODEL_LIST),
+      chatRagModel: coerceGeminiModel(
+        parsed.chatRagModel,
+        CHAT_RAG_GEMINI_MODEL_LIST,
+        DEFAULT_CHAT_RAG_MODEL,
+      ),
       geminiModelList,
       arrangePrompt:
         typeof parsed.arrangePrompt === 'string' && parsed.arrangePrompt.trim()
@@ -499,11 +558,26 @@ function applyUiPreferences(): void {
 
   const modelSelect = getById<HTMLSelectElement>('pref-gemini-model');
   const arrangeModelSelect = getById<HTMLSelectElement>('arrange-model-select');
+  const chatRagModelSelect = getById<HTMLSelectElement>('chat-rag-model-select');
   syncGeminiModelSelect(modelSelect);
-  syncGeminiModelSelect(arrangeModelSelect);
+  syncGeminiModelSelect(
+    arrangeModelSelect,
+    state.uiPreferences.geminiModel,
+    ARRANGE_GEMINI_MODEL_LIST,
+  );
+  syncGeminiModelSelect(
+    chatRagModelSelect,
+    state.uiPreferences.chatRagModel,
+    CHAT_RAG_GEMINI_MODEL_LIST,
+  );
   state.uiPreferences.geminiModel = coerceGeminiModel(
     state.uiPreferences.geminiModel,
-    state.uiPreferences.geminiModelList,
+    ARRANGE_GEMINI_MODEL_LIST,
+  );
+  state.uiPreferences.chatRagModel = coerceGeminiModel(
+    state.uiPreferences.chatRagModel,
+    CHAT_RAG_GEMINI_MODEL_LIST,
+    DEFAULT_CHAT_RAG_MODEL,
   );
 
   const arrangeModelLabel = getById<HTMLElement>('arrange-model-label');
@@ -537,7 +611,10 @@ function updateArrangePromptPreference(): void {
 function updateGeminiModelPreference(): void {
   const field = getById<HTMLSelectElement>('pref-gemini-model');
   if (!field) return;
-  state.uiPreferences.geminiModel = coerceGeminiModel(field.value, state.uiPreferences.geminiModelList);
+  state.uiPreferences.geminiModel = coerceGeminiModel(
+    field.value,
+    state.uiPreferences.geminiModelList,
+  );
   applyUiPreferences();
   saveUiPreferences();
 }
@@ -545,7 +622,19 @@ function updateGeminiModelPreference(): void {
 function updateArrangeGeminiModelPreference(): void {
   const field = getById<HTMLSelectElement>('arrange-model-select');
   if (!field) return;
-  state.uiPreferences.geminiModel = coerceGeminiModel(field.value, state.uiPreferences.geminiModelList);
+  state.uiPreferences.geminiModel = coerceGeminiModel(field.value, ARRANGE_GEMINI_MODEL_LIST);
+  applyUiPreferences();
+  saveUiPreferences();
+}
+
+function updateChatRagGeminiModelPreference(): void {
+  const field = getById<HTMLSelectElement>('chat-rag-model-select');
+  if (!field) return;
+  state.uiPreferences.chatRagModel = coerceGeminiModel(
+    field.value,
+    CHAT_RAG_GEMINI_MODEL_LIST,
+    DEFAULT_CHAT_RAG_MODEL,
+  );
   applyUiPreferences();
   saveUiPreferences();
 }
@@ -556,7 +645,12 @@ function updateGeminiModelListPreference(): void {
   state.uiPreferences.geminiModelList = sanitizeGeminiModelList(field.value);
   state.uiPreferences.geminiModel = coerceGeminiModel(
     state.uiPreferences.geminiModel,
-    state.uiPreferences.geminiModelList,
+    ARRANGE_GEMINI_MODEL_LIST,
+  );
+  state.uiPreferences.chatRagModel = coerceGeminiModel(
+    state.uiPreferences.chatRagModel,
+    CHAT_RAG_GEMINI_MODEL_LIST,
+    DEFAULT_CHAT_RAG_MODEL,
   );
   applyUiPreferences();
   saveUiPreferences();
@@ -899,19 +993,53 @@ function escapeHtml(text: string): string {
 }
 
 function coerceConfig(config?: Partial<AppConfig> | null): AppConfig {
-  const merged = {
-    gitlab_url: '',
-    token: '',
-    project_ref: '',
-    project_ref_history: [] as string[],
+  const legacy = config as any;
+  const connection = (
+    provider: 'gitlab' | 'github',
+    value?: Partial<AppConfig['connections']['gitlab']>,
+  ): AppConfig['connections']['gitlab'] => {
+    const projectRef =
+      value?.project_ref || (provider === 'gitlab' ? legacy?.project_ref || '' : '');
+    return {
+      base_url:
+        value?.base_url ||
+        (provider === 'github' ? 'https://github.com' : legacy?.gitlab_url || ''),
+      token: '',
+      token_configured: Boolean(
+        value?.token_configured || value?.token || (provider === 'gitlab' && legacy?.token),
+      ),
+      project_ref: projectRef,
+      project_ref_history: normalizeProjectRefHistory(
+        projectRef,
+        value?.project_ref_history ||
+          (provider === 'gitlab' ? legacy?.project_ref_history || [] : []),
+      ),
+      verify_ssl: value?.verify_ssl ?? provider === 'github',
+    };
+  };
+  const merged: AppConfig = {
+    active_provider: config?.active_provider === 'github' ? 'github' : 'gitlab',
+    connections: {
+      gitlab: connection('gitlab', config?.connections?.gitlab),
+      github: connection('github', config?.connections?.github),
+    },
     import_file: '',
     gemini_api_key: '',
+    gemini_api_key_configured: false,
+    enable_daily_sync: true,
+    daily_sync_time: '09:00',
+    enable_weekly_report: true,
+    weekly_report_time: '17:30',
     ...config,
   };
 
   return {
     ...merged,
-    project_ref_history: normalizeProjectRefHistory(merged.project_ref, merged.project_ref_history),
+    connections: {
+      gitlab: connection('gitlab', merged.connections?.gitlab),
+      github: connection('github', merged.connections?.github),
+    },
+    gemini_api_key: '',
   };
 }
 
@@ -928,7 +1056,11 @@ function readCachedConfig(): AppConfig | null {
 
 function cacheConfig(config: AppConfig): void {
   try {
-    window.localStorage.setItem(LOCAL_CONFIG_CACHE_KEY, JSON.stringify(coerceConfig(config)));
+    const safeConfig = coerceConfig(config);
+    safeConfig.connections.gitlab.token = '';
+    safeConfig.connections.github.token = '';
+    safeConfig.gemini_api_key = '';
+    window.localStorage.setItem(LOCAL_CONFIG_CACHE_KEY, JSON.stringify(safeConfig));
   } catch (error) {
     console.warn('Unable to cache config', error);
   }
@@ -1225,7 +1357,7 @@ function getDeliveryHighlight(issue: IssueItem): { kind: string; label: string; 
     return {
       kind: 'review',
       label: '目前狀態',
-      value: `進行中 · ${getResolvedMergeRequestCount(issue)} MR`,
+      value: `進行中 · ${getResolvedMergeRequestCount(issue)} ${issue.provider === 'github' ? 'PR' : 'MR'}`,
     };
   }
   return { kind: 'open', label: '目前狀態', value: '開啟中' };
@@ -1261,27 +1393,106 @@ async function api<T>(
    CONFIG
    ══════════════════════════════════════════════ */
 function readConfigForm(): AppConfig {
+  const config = coerceConfig(state.currentConfig);
+  const provider = byId<HTMLSelectElement>('active-provider').value as 'gitlab' | 'github';
   const projectRef = byId<HTMLInputElement>('project-ref').value.trim();
+  const existing = config.connections[provider];
 
-  return {
-    gitlab_url: byId<HTMLInputElement>('gitlab-url').value.trim(),
+  config.active_provider = provider;
+  config.connections[provider] = {
+    ...existing,
+    base_url: byId<HTMLInputElement>('gitlab-url').value.trim(),
     token: byId<HTMLInputElement>('gitlab-token').value.trim(),
     project_ref: projectRef,
     project_ref_history: normalizeProjectRefHistory(projectRef, getProjectRefHistoryFromUi()),
-    import_file:
-      (document.getElementById('import-file') as HTMLInputElement | null)?.value.trim() || '',
-    gemini_api_key: byId<HTMLInputElement>('gemini-api-key').value.trim(),
+    verify_ssl: provider === 'github' ? true : existing.verify_ssl,
   };
+  config.import_file =
+    (document.getElementById('import-file') as HTMLInputElement | null)?.value.trim() || '';
+  config.gemini_api_key = byId<HTMLInputElement>('gemini-api-key').value.trim();
+  state.currentConfig = config;
+  return config;
+}
+
+function providerLabel(provider = state.currentConfig?.active_provider || 'gitlab'): string {
+  return provider === 'github' ? 'GitHub' : 'GitLab';
+}
+
+function fillActiveConnection(config: AppConfig): void {
+  const provider = config.active_provider;
+  const connection = config.connections[provider];
+  byId<HTMLSelectElement>('active-provider').value = provider;
+  byId<HTMLInputElement>('gitlab-url').value = connection.base_url || '';
+  byId<HTMLInputElement>('gitlab-token').value = '';
+  byId<HTMLInputElement>('gitlab-token').placeholder = connection.token_configured
+    ? `${providerLabel(provider)} token 已設定；留空表示不變`
+    : provider === 'github'
+      ? 'github_pat_...（public repo 可留空）'
+      : 'glpat-...';
+  byId<HTMLInputElement>('project-ref').value = connection.project_ref || '';
+  byId<HTMLInputElement>('project-ref').placeholder =
+    provider === 'github' ? 'microsoft/markitdown' : 'group/project 或 project ID';
+  renderProjectRefHistory(connection.project_ref || '', connection.project_ref_history || []);
+  getById<HTMLElement>('source-base-url-label')!.textContent =
+    `${providerLabel(provider)} Base URL`;
+  getById<HTMLElement>('source-token-label')!.textContent = `${providerLabel(provider)} Token`;
+  getById<HTMLElement>('source-project-label')!.textContent =
+    provider === 'github' ? 'Repository owner/name' : 'Project Path / ID';
+  const tokenHint = getById<HTMLElement>('token-hint-copy');
+  if (tokenHint) {
+    tokenHint.textContent =
+      provider === 'github'
+        ? 'Public repo 可匿名讀取；private repo 或較高 rate limit 請設定 fine-grained token。'
+        : '至少需要 read_api 權限。';
+  }
 }
 
 function fillConfigForm(config: AppConfig): void {
-  byId<HTMLInputElement>('gitlab-url').value = config.gitlab_url || '';
-  byId<HTMLInputElement>('gitlab-token').value = config.token || '';
-  byId<HTMLInputElement>('project-ref').value = config.project_ref || '';
-  renderProjectRefHistory(config.project_ref || '', config.project_ref_history || []);
+  state.currentConfig = coerceConfig(config);
+  fillActiveConnection(state.currentConfig);
   const importEl = document.getElementById('import-file') as HTMLInputElement | null;
-  if (importEl) importEl.value = config.import_file || '';
-  byId<HTMLInputElement>('gemini-api-key').value = config.gemini_api_key || '';
+  if (importEl) importEl.value = state.currentConfig.import_file || '';
+  const geminiInput = byId<HTMLInputElement>('gemini-api-key');
+  geminiInput.value = '';
+  geminiInput.placeholder = state.currentConfig.gemini_api_key_configured
+    ? 'Gemini API Key 已設定；留空表示不變'
+    : 'AIza...';
+}
+
+function switchActiveProvider(provider: 'gitlab' | 'github'): void {
+  const previous = state.currentConfig?.active_provider;
+  if (state.currentConfig && previous) {
+    const projectRef = byId<HTMLInputElement>('project-ref').value.trim();
+    state.currentConfig.connections[previous] = {
+      ...state.currentConfig.connections[previous],
+      base_url: byId<HTMLInputElement>('gitlab-url').value.trim(),
+      token: byId<HTMLInputElement>('gitlab-token').value.trim(),
+      project_ref: projectRef,
+      project_ref_history: normalizeProjectRefHistory(projectRef, getProjectRefHistoryFromUi()),
+    };
+    state.currentConfig.active_provider = provider;
+    fillActiveConnection(state.currentConfig);
+  }
+}
+
+async function testActiveConnection(): Promise<void> {
+  const config = readConfigForm();
+  const provider = config.active_provider;
+  const connection = config.connections[provider];
+  const result = await api<{
+    source_ref: string;
+    default_branch?: string;
+    rate_limit_remaining?: string;
+  }>('/api/connection/test', 'POST', {
+    provider,
+    base_url: connection.base_url,
+    token: connection.token,
+    project_ref: connection.project_ref,
+  });
+  setStatus(
+    `${providerLabel(provider)} 連線成功：${result.source_ref}${result.default_branch ? ` (${result.default_branch})` : ''}${result.rate_limit_remaining ? `，剩餘 API 額度 ${result.rate_limit_remaining}` : ''}`,
+    'success',
+  );
 }
 
 /* ══════════════════════════════════════════════
@@ -2095,7 +2306,7 @@ function renderGanttEnhanced(issues: IssueItem[]): void {
         <p>Module：${el.dataset.module}</p>
         <p>起始：${el.dataset.created} · 到期：${el.dataset.due}</p>
         <p>風險：${el.dataset.risk}</p>
-        <p>單擊開啟詳細，雙擊前往 GitLab</p>
+        <p>單擊開啟詳細，雙擊前往來源平台</p>
       `;
       tooltip.classList.add('visible');
     });
@@ -3136,6 +3347,11 @@ function toArrangeJob(issue: ArrangePreviewIssue): ArrangeJob {
 function toIssueItemFromArrangeJob(job: ArrangeJob): IssueItem {
   return {
     iid: job.iid,
+    provider: state.currentConfig?.active_provider || 'gitlab',
+    source_ref:
+      state.currentConfig?.connections[state.currentConfig.active_provider]?.project_ref || null,
+    schema_version: 2,
+    relation_counts_known: false,
     title: job.title,
     state: job.state,
     module: null,
@@ -3228,7 +3444,7 @@ function renderArrangeJobs(): void {
                 type="button"
                 class="arrange-job-detail-btn"
                 data-arrange-job-detail="${escapeHtml(job.id)}"
-                title="查看 GitLab Issue 詳細資訊"
+                title="查看 Issue 詳細資訊"
               >
                 查看詳情
               </button>
@@ -3804,7 +4020,7 @@ async function runArrangeScrapeJob(job: ArrangeJob, signal?: AbortSignal): Promi
         url: job.web_url,
         system_prompt: byId<HTMLTextAreaElement>('arrange-prompt').value.trim(),
         preferred_model: state.uiPreferences.geminiModel,
-        model_candidates: state.uiPreferences.geminiModelList,
+        model_candidates: ARRANGE_GEMINI_MODEL_LIST,
       },
       { signal },
     );
@@ -3862,7 +4078,7 @@ async function runArrangeLlmJob(job: ArrangeJob, signal?: AbortSignal): Promise<
         raw_text: job.raw_text,
         system_prompt: byId<HTMLTextAreaElement>('arrange-prompt').value.trim(),
         preferred_model: state.uiPreferences.geminiModel,
-        model_candidates: state.uiPreferences.geminiModelList,
+        model_candidates: ARRANGE_GEMINI_MODEL_LIST,
       },
       { signal },
     );
@@ -4684,7 +4900,12 @@ async function loadAllIssues(): Promise<void> {
   const issues = await api<IssueItem[]>('/api/issues');
   state.allIssues = issues;
   await refreshRagIndexAvailability();
-  if (state.allIssues.length > 0) {
+  const activeProvider = state.currentConfig?.active_provider || 'gitlab';
+  const activeConnection = state.currentConfig?.connections[activeProvider];
+  if (
+    state.allIssues.length > 0 &&
+    (activeProvider !== 'github' || Boolean(activeConnection?.token_configured))
+  ) {
     void startRagRebuild();
   }
   state.mergeRequestsByIid.clear();
@@ -4715,7 +4936,7 @@ async function loadDashboard(): Promise<void> {
 }
 
 async function syncNow(): Promise<void> {
-  setStatus('同步中…（從 GitLab 抓取，請稍候）');
+  setStatus(`同步中…（從 ${providerLabel()} 抓取，請稍候）`);
   setActionButtonsEnabled(false);
   try {
     await saveConfig();
@@ -4740,7 +4961,14 @@ function renderIssueDeliverySummary(
     issue.state !== 'closed' && !!dueDate && dueDate < (startOfDay(new Date()) as Date);
   const cards = [
     { kind: highlight.kind, label: highlight.label, value: highlight.value },
-    { kind: 'review', label: '相關 MRs', value: String(mergeRequestCount) },
+    {
+      kind: 'review',
+      label: issue.provider === 'github' ? '相關 PRs' : '相關 MRs',
+      value:
+        issue.relation_counts_known || mergeRequestCount > 0
+          ? String(mergeRequestCount)
+          : '詳情載入',
+    },
     { kind: 'ready', label: '相關 Issues', value: String(linkedCount) },
   ];
   const primaryStatusLabel =
@@ -4761,7 +4989,9 @@ function renderIssueDeliverySummary(
           : 'open';
   const chips = [
     `<span class="detail-chip ${primaryStatusClass}">${primaryStatusLabel}</span>`,
-    mergeRequestCount > 0 ? `<span class="detail-chip review">MR ${mergeRequestCount}</span>` : '',
+    mergeRequestCount > 0
+      ? `<span class="detail-chip review">${issue.provider === 'github' ? 'PR' : 'MR'} ${mergeRequestCount}</span>`
+      : '',
     linkedCount > 0 ? `<span class="detail-chip related">Linked ${linkedCount}</span>` : '',
   ]
     .filter(Boolean)
@@ -4881,7 +5111,7 @@ function applyPendingDiscussionJump(container: HTMLElement): void {
 
 function renderMergeRequests(target: HTMLDivElement, mergeRequests: MergeRequestInfo[]): void {
   if (!mergeRequests.length) {
-    target.innerHTML = '<div class="empty-state">這張 Issue 目前沒有 linked MR。</div>';
+    target.innerHTML = '<div class="empty-state">這張 Issue 目前沒有 linked change。</div>';
     return;
   }
   target.innerHTML = mergeRequests
@@ -4891,7 +5121,7 @@ function renderMergeRequests(target: HTMLDivElement, mergeRequests: MergeRequest
       <div class="mr-card-header">
         <div class="mr-card-title">
           <span class="state-badge ${escapeHtml(mr.state || 'opened')}">${escapeHtml(mr.state || 'opened')}</span>
-          <a href="${escapeHtml(mr.web_url || '#')}" target="_blank" rel="noreferrer">!${mr.iid} ${escapeHtml(mr.title)}</a>
+          <a href="${escapeHtml(mr.web_url || '#')}" target="_blank" rel="noreferrer">${mr.kind === 'pull_request' ? '#' : '!'}${mr.iid} ${escapeHtml(mr.title)}</a>
           ${mr.draft ? '<span class="detail-chip blocked">Draft</span>' : ''}
         </div>
       </div>
@@ -4937,7 +5167,7 @@ function renderLinkedItems(target: HTMLDivElement, links: LinkedItemInfo[]): voi
 async function loadIssueRelations(issue: IssueItem): Promise<void> {
   const mergeTarget = byId<HTMLDivElement>('detail-merge-requests');
   const linksTarget = byId<HTMLDivElement>('detail-linked-items');
-  mergeTarget.innerHTML = '<div class="empty-state">載入 linked MR 中...</div>';
+  mergeTarget.innerHTML = `<div class="empty-state">載入 linked ${issue.provider === 'github' ? 'PR' : 'MR'} 中...</div>`;
   linksTarget.innerHTML = '<div class="empty-state">載入 linked items 中...</div>';
 
   const mergeRequestsPromise = state.mergeRequestsByIid.has(issue.iid)
@@ -4988,6 +5218,9 @@ function prepareIssueDetailOverlay(issue: IssueItem): {
   byId<HTMLElement>('detail-created').textContent = fmtDate(issue.created_at);
   byId<HTMLElement>('detail-updated').textContent = fmtDate(issue.updated_at);
   byId<HTMLElement>('detail-due').textContent = issue.due_date ? fmtDate(issue.due_date) : '-';
+  if (issue.provider === 'github' && !issue.due_date) {
+    byId<HTMLElement>('detail-due').textContent = 'GitHub 未提供';
+  }
 
   const labelsDiv = byId<HTMLDivElement>('detail-labels');
   labelsDiv.innerHTML = (issue.labels || [])
@@ -4995,6 +5228,9 @@ function prepareIssueDetailOverlay(issue: IssueItem): {
     .join('');
 
   const link = byId<HTMLAnchorElement>('detail-link');
+  link.textContent = `前往 ${issue.provider === 'github' ? 'GitHub' : 'GitLab'}`;
+  const changeTitle = getById<HTMLElement>('detail-related-change-title');
+  if (changeTitle) changeTitle.textContent = issue.provider === 'github' ? '相關 PRs' : '相關 MRs';
   if (issue.web_url) {
     link.href = issue.web_url;
     link.style.display = '';
@@ -5037,6 +5273,7 @@ function wireIssueSummaryButton(
 }
 
 function requestIssueLinkDataForVisibleIssues(issues: IssueItem[]): void {
+  if ((state.currentConfig?.active_provider || 'gitlab') === 'github') return;
   const issuesForLinks = issues
     .filter(
       (issue) =>
@@ -5177,7 +5414,7 @@ async function loadDiscussions(iid: number, container: HTMLDivElement): Promise<
         '<div class="empty-state">Token 已失效或被撤銷，請重新產生 Personal Access Token。</div>';
     } else {
       container.innerHTML =
-        '<div class="empty-state">無法載入討論（請確認 GitLab 連線設定）。</div>';
+        '<div class="empty-state">無法載入討論（請確認 provider 連線設定）。</div>';
     }
   }
 }
@@ -5442,8 +5679,8 @@ async function sendChatMessage(input: HTMLInputElement): Promise<void> {
     const result = await api<ChatResponse>('/api/chat', 'POST', {
       question,
       history: chatHistory.slice(0, -1),
-      preferred_model: state.uiPreferences.geminiModel,
-      model_candidates: state.uiPreferences.geminiModelList,
+      preferred_model: state.uiPreferences.chatRagModel,
+      model_candidates: CHAT_RAG_GEMINI_MODEL_LIST,
       use_rag: true,
       top_k: 6,
     });
@@ -5786,9 +6023,14 @@ function wireEvents(): void {
     if (filePath && imp) imp.value = filePath;
   });
 
-  // Token hint link – open GitLab personal access tokens page
+  // Token hint link
   document.getElementById('token-hint-link')?.addEventListener('click', (e) => {
     e.preventDefault();
+    const provider = state.currentConfig?.active_provider || 'gitlab';
+    if (provider === 'github') {
+      window.trackerBridge.openPath('https://github.com/settings/personal-access-tokens');
+      return;
+    }
     const base = byId<HTMLInputElement>('gitlab-url').value.replace(/\/+$/, '');
     if (base) {
       window.trackerBridge.openPath(`${base}/-/user_settings/personal_access_tokens`);
@@ -5803,6 +6045,12 @@ function wireEvents(): void {
 
   bind<HTMLButtonElement>('btn-load-config', 'click', () => loadConfig().catch(handleError));
   bind<HTMLButtonElement>('btn-save-config', 'click', () => saveConfig().catch(handleError));
+  bind<HTMLButtonElement>('btn-test-connection', 'click', () =>
+    testActiveConnection().catch(handleError),
+  );
+  bind<HTMLSelectElement>('active-provider', 'change', (event) =>
+    switchActiveProvider((event.currentTarget as HTMLSelectElement).value as 'gitlab' | 'github'),
+  );
   bind<HTMLButtonElement>('btn-sync-now', 'click', () => syncNow().catch(handleError));
   bind<HTMLButtonElement>('btn-refresh-dashboard', 'click', () => syncNow().catch(handleError));
   bind<HTMLButtonElement>('btn-arrange-preview', 'click', () =>
@@ -5856,12 +6104,17 @@ function wireEvents(): void {
     setArrangeHistoryPreviewMode('raw'),
   );
   bind<HTMLTextAreaElement>('arrange-prompt', 'input', () => updateArrangePromptPreference());
-  bind<HTMLTextAreaElement>('pref-gemini-model-list', 'input', () => updateGeminiModelListPreference());
+  bind<HTMLTextAreaElement>('pref-gemini-model-list', 'input', () =>
+    updateGeminiModelListPreference(),
+  );
   bind<HTMLInputElement>('arrange-history-search', 'input', () => renderArrangeHistoryList());
   bind<HTMLSelectElement>('arrange-history-kind', 'change', () => renderArrangeHistoryList());
   bind<HTMLSelectElement>('pref-gemini-model', 'change', () => updateGeminiModelPreference());
   bind<HTMLSelectElement>('arrange-model-select', 'change', () =>
     updateArrangeGeminiModelPreference(),
+  );
+  bind<HTMLSelectElement>('chat-rag-model-select', 'change', () =>
+    updateChatRagGeminiModelPreference(),
   );
   bind<HTMLButtonElement>('pref-theme-dark', 'click', () => {
     state.uiPreferences.theme = 'dark';

@@ -1,63 +1,61 @@
 # Contributing Guide
 
-## 1. 分支策略
+## 分支與 Commit
 
-- `main`：可發佈版本
-- 功能分支：`feat/<short-name>`
-- 修錯：`fix/<short-name>`
-- 文件：`docs/<short-name>`
-
-## 2. Commit 訊息
-
-採用 Conventional Commits：
+建議分支使用 `feat/<short-name>`、`fix/<short-name>` 或 `docs/<short-name>`，commit 使用 Conventional Commits：
 
 ```text
-feat(backend): add /api/issues/{iid}/links endpoint
-fix(renderer): debounce search input to avoid table flicker
-docs(api): document new analytics fields
-chore(deps): bump electron to 41.2.3
-refactor(scheduler): extract should_run logic
+feat(provider): add GitHub issue comments
+fix(rag): clear index when source changes
+docs(api): document provider capabilities
 ```
 
-## 3. Pull Request 流程
+## 實作原則
 
-1. 從 `main` 開分支
-2. 開發 + `npm run format`
-3. 自我驗證：
-   - `npm run dev` 可成功啟動
-   - 變更後端：`http://127.0.0.1:8765/docs` 對應端點可呼叫
-   - 變更 UI：截圖附在 PR
-4. 同步更新文件：
-   - 新 API → [docs/specs/API_SPEC.md](specs/API_SPEC.md)
-   - 新使用者操作 → [docs/product/user-flow.md](product/user-flow.md)
-   - 重大決策 → 新增 ADR 到 [docs/architecture/decisions/](architecture/decisions/)
-5. PR 描述應包含：背景、做了什麼、如何驗證、影響範圍
+- 優先沿用現有 Electron、partial-based frontend、FastAPI 與 core service 邊界。
+- Provider-specific API 呼叫放在 provider client；通用 route 與 UI 使用 normalized Issue shape。
+- 新增 provider 欄位時需定義缺值降級策略，不能把「平台未提供」判斷成 `0` 或風險。
+- Secrets 不得由 `GET /api/config` 回傳，也不得寫入 frontend localStorage。
+- 修改 config 或 cache schema 時必須提供舊資料 migration 與 source identity 切換規則。
+- `backend/app.py` 與 `frontend/scripts/legacy-app.ts` 仍偏大；新增程式碼應避免讓 routing、provider 或畫面條件耦合持續擴大。
 
-## 4. 程式碼風格
+## 必要文件
 
-| 語言 | 工具 | 設定 |
-| --- | --- | --- |
-| TypeScript | `tsc strict`、Prettier | [tsconfig.json](../tsconfig.json) |
-| Python | PEP 8 + 類型註解 + `from __future__ import annotations` | (尚未引入 ruff/black，歡迎 PR) |
-| Markdown | Prettier | 80–120 字元寬 |
+下列變更必須同步文件：
 
-## 5. 測試（待補）
+- API route/request/response：更新 [API_SPEC.md](specs/API_SPEC.md)。
+- Provider contract、normalizer、capabilities：更新 [GITHUB_PROVIDER.md](specs/GITHUB_PROVIDER.md)與 ADR。
+- Config/cache schema 或 migration：更新 [data-model.md](architecture/data-model.md)。
+- UI 流程或產品限制：更新 [user-flow.md](product/user-flow.md)與 [PRD.md](product/PRD.md)。
+- 安全行為：更新 [SECURITY.md](security/SECURITY.md)。
 
-- 目前 **沒有自動化測試**
-- 建議優先補：
-  - `core/report_service.build_dashboard` 的 fixture 測試
-  - `core/scheduler.TrackerScheduler._should_run` 的時間邊界測試
-  - Renderer 主要 reducer / formatter 函式的單元測試
+## 驗證
 
-## 6. 給 AI Coding Agent 的規則
+目前 repository 有 13 個 Python `unittest`，涵蓋 config migration/masking、GitHub PR 排除與 normalizer、comments、relations、rate limit、URL parsing、cache identity 與 API integration。
 
-1. 修檔前先看 [docs/architecture/runtime-overview.md](architecture/runtime-overview.md)。
-2. **不要** 在 Renderer 直接 import Node modules（`contextIsolation` 已切斷）。
-3. **不要** 在 Backend 引入新的網路 listener（只能用 FastAPI route）。
-4. 新增 dependency：
-   - Node：`npm install --save` 並提交 `package-lock.json`
-   - Python：加入 `backend/requirements.txt` 並重新 PyInstaller hidden import
-5. 修改任何 API → 同步 [API_SPEC.md](specs/API_SPEC.md)。
-6. 修改任何 UI 流程 → 同步 [user-flow.md](product/user-flow.md)。
-7. 寫商業邏輯一律放 `backend/core/*.py`，`app.py` 保持 thin。
-8. 不要在程式碼里塞 token / API key 預設值。
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s backend\tests -v
+npm.cmd run build:ts
+.\.venv\Scripts\python.exe -m compileall -q backend
+.\.venv\Scripts\python.exe -m black --check backend
+npx.cmd prettier --check README.md "docs/**/*.md" frontend/scripts/README.md package.json
+git diff --check
+```
+
+格式化可使用：
+
+```powershell
+.\.venv\Scripts\python.exe -m black backend
+npx.cmd prettier --write README.md "docs/**/*.md" frontend/scripts/README.md package.json
+```
+
+GitHub Actions 目前只執行 TypeScript build、封裝與 release，不會執行 Python tests、Black 或 Prettier check；提交前需在本機完成上述驗證。
+
+## Provider 測試要求
+
+- Provider contract 與 normalizer 必須以 fixture 測試。
+- GitHub list 測試必須確認排除 Pull Requests。
+- 覆蓋 401、403、404、429、rate-limit exhaustion 與無 token情境。
+- 覆蓋 provider/repository 切換後 Issue 與 RAG cache 不混用。
+- GitHub 缺少 due date 等欄位時，不得產生錯誤逾期或 burndown 判定。
+- 修改 API 時，需新增或更新 integration tests。

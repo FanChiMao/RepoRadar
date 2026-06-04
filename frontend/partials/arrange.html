@@ -4,7 +4,7 @@
       <div class="view-eyebrow">Views / Issue 整理</div>
       <h2 class="view-title">Issue 整理</h2>
       <p class="view-subtitle">
-        貼上 Issue URL 或 GitLab filter URL，預覽後直接做 Gemini 整理與 Excel 匯出。
+        貼上 GitLab/GitHub Issue URL 或 filter URL，預覽後直接做 Gemini 整理與 Excel 匯出。
       </p>
     </div>
   </section>
@@ -31,7 +31,7 @@
         id="arrange-url-list"
         class="arrange-textarea"
         rows="9"
-        placeholder="格式一：多行 Issue URL（支援整筆貼上，系統只抓 http 開頭的行）&#10;格式二：貼入 GitLab 篩選清單的 URL（例如包含狀態、作者、標籤等條件的 Issue 列表網址）"
+        placeholder="格式一：多行 GitLab/GitHub Issue URL&#10;格式二：貼入支援的 Issue 篩選清單 URL"
       ></textarea>
       <div class="button-row">
         <button id="btn-arrange-preview" class="secondary-btn">預覽清單</button>
@@ -95,8 +95,7 @@
           Model
           <select id="arrange-model-select">
             <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-            <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-            <option value="gemma-4-31b-it" selected>gemma-4-31b-it</option>
+            <option value="gemini-3.5-flash">gemini-3.5-flash</option>
           </select>
         </label>
       </div>
@@ -151,7 +150,7 @@
             <p id="arrange-selected-meta" class="workspace-meta">尚未選取 Issue。</p>
           </div>
         </div>
-        <span id="arrange-model-label" class="hint">Model: gemma-4-31b-it</span>
+        <span id="arrange-model-label" class="hint">Model: gemini-2.5-pro</span>
       </div>
 
       <div class="arrange-result-split">

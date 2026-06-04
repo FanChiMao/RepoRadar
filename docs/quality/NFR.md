@@ -1,61 +1,67 @@
-# Non-Functional Requirements (NFR)
+# Non-Functional Requirements
 
-## 1. 效能
+## 效能與容量
 
-| 指標 | 目標 | 量測方式 |
-| --- | --- | --- |
-| 冷啟動到主視窗可互動 | ≤ 5 秒（含 backend health check） | main.ts 啟動 timestamp |
-| Dashboard 首次資料載入 | ≤ 1 秒（cache hit） | `GET /api/dashboard` |
-| 同步 1000 筆 Issue | ≤ 30 秒 | `POST /api/fetch` |
-| Analytics 計算 | ≤ 500 ms / 1000 筆 | `GET /api/analytics` |
-| AI Discussion Summary | ≤ 15 秒（依 Gemini） | `POST /api/issues/{iid}/discussions/summary` |
-| AI Chat 回答 | ≤ 20 秒（依 Gemini） | `POST /api/chat` |
+| 指標                     | 目標/假設                         |
+| ------------------------ | --------------------------------- |
+| 冷啟動到可互動           | 5 秒內，包含 backend health check |
+| Dashboard cache hit      | 1 秒內                            |
+| Analytics / 1,000 Issues | 500 ms 內                         |
+| 單一 source Issues       | 5,000 筆內                        |
+| `issues_cache.json`      | 50 MB 內                          |
 
-## 2. 可用性 / 可靠性
+GitHub relation 不在 bulk list 預抓，Issue Detail 才 lazy-load，以控制 API 數量。
 
-- 排程任務具備「同日去重」（`meta.scheduler.<task>` 紀錄日期）。
-- GitLab 呼叫單次 timeout 30s；Gemini 60–90s。
-- AI 呼叫對 429 自動 exponential backoff 3 次。
-- Backend 崩潰時 main process 會印 `Backend exited with code N`，但目前 **不自動重啟**（v1.0 限制，建議 v1.1 加 supervisor）。
+## 可靠性
 
-## 3. 相容性
+- Scheduler 使用 `meta.scheduler.<task>` 同日去重。
+- Provider request timeout 為 30 秒。
+- GitHub 403/429/rate-limit exhaustion 最多嘗試 3 次，單次等待上限 5 秒，bounded concurrency 為 1。
+- Gemini 429 使用最多 3 次 exponential backoff。
+- Backend crash 目前不自動重啟。
+- 切換 provider/source 時必須清除 Issue 與 RAG cache。
 
-| 項目 | 支援範圍 |
-| --- | --- |
-| OS | Windows 10/11 x64（macOS/Linux 程式碼預留但未驗證） |
-| Node | 18 LTS+ |
-| Python | 3.11–3.13 |
-| GitLab | self-hosted CE/EE 14+，GitLab.com SaaS |
-| Gemini | `gemma-4-31b-it`（預設）、`gemini-2.5-pro/flash`（可在 `LLM_MODELS` 切換） |
+## 相容性
 
-## 4. 可維護性
+| 項目   | 範圍                                                        |
+| ------ | ----------------------------------------------------------- |
+| OS     | Windows 10/11 x64；macOS/Linux 未驗證                       |
+| Node   | 18+                                                         |
+| Python | `Start-GitlabTracker.bat` 要求 3.12                         |
+| GitLab | Self-hosted/GitLab.com，read-only Issue 能力                |
+| GitHub | github.com，read-only Issue-centric；不支援 GHES            |
+| Models | Chat/RAG、Arrange、Summary 各使用文件列出的 model allowlist |
 
-- TypeScript strict、Python typed (`from __future__ import annotations` + PEP 604 union)
-- 後端業務邏輯集中於 `core/*`，`app.py` 只做 routing 組合
-- 文件位於 `docs/`，新增 API 必同步更新 [API_SPEC.md](../specs/API_SPEC.md)
-- 重要技術選型有 ADR ([architecture/decisions/](../architecture/decisions/))
+## 可維護性
 
-## 5. 可觀測性
+- TypeScript 使用 strict；Python 使用 Black、typing 與 `unittest`。
+- Provider-specific 呼叫與 normalization 應留在 provider client。
+- API、schema、provider capability 與模型變更需同步文件和測試。
+- 目前 13 個 Python tests；provider contract、normalizer、migration、URL parsing、rate limit 與 API integration 必須持續覆蓋。
+- `backend/app.py` 含 routing、AI、analytics、同步與報表，仍需拆分。
+- `frontend/scripts/legacy-app.ts` 超過 6,000 行，仍需拆分。
 
-- Backend：所有 print 走 stdout/stderr，由 main process 轉到 Electron console
-- Renderer：DevTools 自動開（dev mode）
-- 目前 **無結構化 log / metrics 系統**（v2 候選：加 logging + 寫檔）
+## 可觀測性
 
-## 6. 國際化
+- Backend stdout/stderr 由 Electron main process 接收。
+- Dev mode 可使用 renderer DevTools。
+- RAG jobs/status 可由 API 查詢。
+- 目前無結構化 logs、metrics 或 distributed tracing。
 
-- v1.0 僅繁體中文 UI 與 Prompt
-- 後端錯誤訊息包含中文，會直接顯示給使用者
+## 安全
 
-## 7. 容量假設
+- Backend 僅 bind loopback，CORS 限制本機 origins。
+- Loopback API 仍無驗證；backend config secrets 仍明碼。
+- GET config 與 frontend localStorage 不得包含 secret。
+- Provider token 採最小 read-only 權限。
 
-| 項目 | 上限假設 |
-| --- | --- |
-| 單一 project 的 Issue | 5,000 筆內穩定 |
-| `issues_cache.json` 檔案大小 | < 50 MB |
-| 週報歷史檔 | 不自動清理；建議手動歸檔 |
-| `project_ref_history` | 10 筆 |
+## Migration 與資料一致性
 
-## 8. 升級 / 相容性
+- 舊 flat GitLab config 自動 migration 至 nested connections。
+- Issue cache schema 為 version 2，包含 `provider`、`source_ref`、`relation_counts_known`。
+- 未來 schema 變更必須提供 migration 或相容讀取。
+- Provider 未提供欄位時必須為 `null`/unknown，不得產生錯誤風險判斷。
 
-- `config.json` 使用 `DEFAULT_CONFIG.update(loaded)` 合併，新增欄位向下相容。
-- `issues_cache.json` 結構若改 schema，請在 `_normalize_issue()` 加版本欄位（目前無 schema version）。
+## CI 缺口
+
+GitHub Actions 目前只執行 build/release，未執行 Python tests、compileall、Black 或 Prettier check；發版前需依[建置與發版文件](../operations/build-and-release.md)在本機驗證。

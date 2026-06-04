@@ -26,6 +26,10 @@ def simplify_issue(
     task_status = issue.get("task_completion_status") or {}
     return {
         "iid": issue.get("iid"),
+        "provider": issue.get("provider") or "gitlab",
+        "source_ref": issue.get("source_ref"),
+        "schema_version": issue.get("schema_version", 1),
+        "relation_counts_known": issue.get("relation_counts_known", True),
         "title": issue.get("title"),
         "state": issue.get("state"),
         "module": extract_module(issue),

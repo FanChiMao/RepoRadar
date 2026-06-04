@@ -141,6 +141,39 @@
   display: block;
 }
 
+.chat-model-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-glass);
+  flex-shrink: 0;
+}
+
+.chat-model-area label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chat-model-area select {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-glass);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+}
+
+.chat-model-area select:focus {
+  border-color: rgba(167, 139, 250, 0.4);
+}
+
 .chat-rag-state__card {
   --rag-state-accent: var(--blue-400);
   --rag-state-border: var(--border-glass);

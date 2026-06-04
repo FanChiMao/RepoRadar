@@ -8,11 +8,46 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 
+def detect_provider_from_url(url: str) -> str:
+    parsed = urlparse(url.strip())
+    host = parsed.netloc.lower()
+    if host in {"github.com", "www.github.com"}:
+        return "github"
+    return "gitlab"
+
+
+def parse_issue_source_url(url: str) -> tuple[str, str, str, int]:
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid issue URL.")
+
+    provider = detect_provider_from_url(url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if provider == "github":
+        if len(parts) < 4 or parts[2] != "issues":
+            raise ValueError("The URL does not point to a GitHub issue.")
+        try:
+            issue_iid = int(parts[3])
+        except ValueError as exc:
+            raise ValueError("Unable to resolve GitHub issue number from URL.") from exc
+        return provider, "https://github.com", "/".join(parts[:2]), issue_iid
+
+    base_url, project_ref, issue_iid = _parse_gitlab_issue_url(parsed)
+    return provider, base_url, project_ref, issue_iid
+
+
 def parse_issue_url(url: str) -> tuple[str, str, int]:
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Invalid GitLab issue URL.")
+    return (
+        _parse_gitlab_issue_url(parsed)
+        if detect_provider_from_url(url) == "gitlab"
+        else parse_issue_source_url(url)[1:]
+    )
 
+
+def _parse_gitlab_issue_url(parsed) -> tuple[str, str, int]:
     parts = [part for part in parsed.path.split("/") if part]
     if "- " in parts:
         raise ValueError("Invalid GitLab issue URL.")
@@ -41,12 +76,68 @@ def parse_issue_url(url: str) -> tuple[str, str, int]:
 
 
 def is_filter_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    if detect_provider_from_url(value) == "github":
+        parts = [part for part in parsed.path.split("/") if part]
+        return len(parts) == 3 and parts[2] == "issues" and bool(parsed.query)
     return "/-/issues?" in value
+
+
+def parse_filter_source_url(
+    filter_url: str,
+) -> tuple[str, str, str, dict[str, str], list[str], list[str], list[str]]:
+    if detect_provider_from_url(filter_url) == "github":
+        parsed = urlparse(filter_url.strip())
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() not in {
+            "github.com",
+            "www.github.com",
+        }:
+            raise ValueError("Invalid GitHub issue filter URL.")
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 3 or parts[2] != "issues":
+            raise ValueError("The URL does not look like a GitHub issue filter page.")
+        query = parse_qs(parsed.query, keep_blank_values=False)
+        qualifiers = " ".join(query.get("q", []))
+        state_match = re.search(r"(?:state|is):(open|closed)", qualifiers)
+        labels = re.findall(r'label:"([^"]+)"|label:([^\s]+)', qualifiers)
+        label_values = [quoted or plain for quoted, plain in labels]
+        if query.get("labels"):
+            label_values.extend(
+                value for raw in query["labels"] for value in raw.split(",") if value
+            )
+        params: dict[str, str] = {
+            "state": (
+                state_match.group(1) if state_match else query.get("state", ["open"])[0]
+            )
+        }
+        assignee_match = re.search(r"assignee:([^\s]+)", qualifiers)
+        if assignee_match:
+            params["assignee"] = assignee_match.group(1)
+        if label_values:
+            params["labels"] = ",".join(dict.fromkeys(label_values))
+        return (
+            "github",
+            "https://github.com",
+            "/".join(parts[:2]),
+            params,
+            [],
+            [],
+            [],
+        )
+
+    base_url, project_ref, params, labels, or_labels, not_labels = parse_filter_url(
+        filter_url
+    )
+    return "gitlab", base_url, project_ref, params, labels, or_labels, not_labels
 
 
 def parse_filter_url(
     filter_url: str,
 ) -> tuple[str, str, dict[str, str], list[str], list[str], list[str]]:
+    if detect_provider_from_url(filter_url) == "github":
+        parsed = parse_filter_source_url(filter_url)
+        return parsed[1], parsed[2], parsed[3], parsed[4], parsed[5], parsed[6]
+
     parsed = urlparse(filter_url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Invalid GitLab filter URL.")

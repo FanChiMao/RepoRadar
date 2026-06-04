@@ -1,95 +1,59 @@
 # User Flow
 
-這份文件從使用者視角描述目前 UI 的主要操作路徑。
+## 首次設定
 
-## 1. 首次啟動
+1. 開啟 `Connections`。
+2. 選擇 GitLab 或 GitHub。
+3. 輸入 project/repository 與 token；GitHub public repo token 可留空但額度有限。
+4. 執行 `Test Connection`。
+5. 設定 Gemini API key，儲存後執行 `Sync Now`。
 
-1. 開啟 App
-2. 進入 `Connections`
-3. 輸入 GitLab 與 Gemini 設定
-4. 儲存後按 `Sync Now`
+Connection test 不會保存輸入內容。Frontend 只接收 secret configured flags，不保存 token/API key。
 
-如果只想驗證畫面，也可以先用 `Import JSON` 載入既有 Issue 資料。
+## 切換 Provider
 
-## 2. Dashboard 主流程
+1. 在 Connections 選擇另一 provider 或 project ref。
+2. 執行 connection test 並儲存。
+3. Backend 清除舊 Issue cache、RAG index/jobs 與 `last_sync`。
+4. 執行同步，重新建立 dashboard；需要 Chat 時再重建 RAG。
 
-`Dashboard` 是預設首頁，包含四個 tab：
+## Dashboard 與 Issue Detail
 
-- `Dashboard`
-  - 週摘要 KPI
-  - 最近更新
-  - 本週新增
-  - Focus progress
-  - 風險與到期提醒
-- `Analytics`
-  - Burndown
-  - Workload
-  - Label distribution
-  - Milestone progress
-  - Lifecycle
-- `Timeline`
-  - Gantt / Calendar
-  - milestone / assignee / module 分組
-  - 月 / 週視圖
-- `Table`
-  - 搜尋、狀態、milestone、label、日期篩選
-  - 欄位排序
+- Dashboard/Analytics/Timeline/Table 共用 normalized Issues。
+- 點選 Issue 開啟 detail overlay。
+- GitLab 顯示 discussions、MR 與 linked issues。
+- GitHub 顯示 normalized comments、PR、dependencies 與 sub-issues；relations 開啟 detail 才載入。
+- GitHub 不支援的 due date、milestone start 或 pipeline 顯示「GitHub 未提供」。
+- 可執行 AI discussion summary。
 
-## 3. 單一 Issue 查看
+## AI Issue Chat
 
-使用者從列表點進單一 Issue 後，會打開 overlay：
+1. 同步 Issues。
+2. 執行 RAG reindex，並從 status/jobs 觀察進度。
+3. 開啟 AI Issue Chat，選擇 Chat/RAG 模型。
+4. 輸入問題；回答會包含 mode 與 sources。
 
-- 查看 Issue 基本資訊與 labels
-- 查看 linked MR 與 linked issues
-- 查看完整 discussion
-- 點 `AI 摘要` 生成討論摘要
-- 點 GitLab 連結時，Electron 會先詢問要用哪個外部瀏覽器開啟
+Chat/RAG 可用模型為 `gemini-3.5-flash`、`gemini-2.5-pro`、`gemma-4-26b-a4b-it`。
 
-## 4. AI Chat
+## Issue Arrange
 
-右下角浮動按鈕可開啟 `AI Issue Chat`：
+支援輸入：
 
-- 問題會根據目前快取的所有 Issue 回答
-- 聊天歷史會帶到下一輪請求
-- 回答應該用 `#IID` 引用 Issue
-- 如果沒有同步資料或沒有 Gemini API Key，後端會拒絕請求
+- GitLab：`https://gitlab.example.com/group/project/-/issues/42`
+- GitLab filter：包含 `/-/issues?`
+- GitHub：`https://github.com/owner/repo/issues/42`
+- GitHub filter：`https://github.com/owner/repo/issues?...`
 
-## 5. Issue Arrange
+流程：
 
-這是本次重點更新的工作區。
+1. Preview 單一 Issue 或展開 filter。
+2. 選擇/編輯 prompt template。
+3. 執行 scrape，視需要使用 Arrange 模型。
+4. 檢視 raw/result 與歷史。
+5. 匯出 Excel。
 
-### 入口資料
+Arrange 模型為 `gemini-2.5-pro`、`gemini-3.5-flash`。
 
-- 多個 GitLab Issue URL
-- 一個 GitLab filter URL
+## Preferences 與 Reports
 
-### 主要互動
-
-1. `Preview`
-   - 驗證 URL
-   - 展開 filter URL
-   - 產生可處理 Issue 清單
-2. 編輯 prompt
-   - 使用內建 prompt
-   - 儲存為 local prompt template
-3. 執行
-   - 單筆處理
-   - 批次處理
-   - 只 scrape
-   - 只跑 LLM
-4. 檢視結果
-   - 左側看 raw issue text
-   - 右側看 LLM 結果
-5. 匯出
-   - Excel
-   - 歷史紀錄重開與預覽
-
-## 6. Preferences
-
-`Preferences` 目前可調整：
-
-- 淺色 / 深色主題
-- UI 縮放
-- Gemini model 清單
-
-部分偏好會存在瀏覽器 localStorage，而不是後端 `config.json`。
+Preferences 保存 theme、scale、sidebar、模型與 prompt templates，不保存 secrets。週報可產生 Markdown、HTML 與 PDF。
