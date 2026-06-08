@@ -29,7 +29,7 @@ flowchart LR
 4. `bootstrap.js` 載入 partials，再掛載 `dist/frontend/scripts/legacy-app.js`。
 5. Frontend 讀取 config、capabilities、dashboard 與 issues。
 
-開發模式優先使用 `.venv\Scripts\python.exe`；封裝模式使用 `backend/dist/gitlab-tracker-backend/`。
+開發模式優先使用 `.venv\Scripts\python.exe`；封裝模式使用 `backend/dist/repo-radar-backend/`。
 
 ## Backend 模組
 

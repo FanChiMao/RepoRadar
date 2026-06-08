@@ -27,7 +27,7 @@ GitHub relation 不在 bulk list 預抓，Issue Detail 才 lazy-load，以控制
 | ------ | ----------------------------------------------------------- |
 | OS     | Windows 10/11 x64；macOS/Linux 未驗證                       |
 | Node   | 18+                                                         |
-| Python | `Start-GitlabTracker.bat` 要求 3.12                         |
+| Python | `Start-RepoRadar.bat` 要求 3.12                         |
 | GitLab | Self-hosted/GitLab.com，read-only Issue 能力                |
 | GitHub | github.com，read-only Issue-centric；不支援 GHES            |
 | Models | Chat/RAG、Arrange、Summary 各使用文件列出的 model allowlist |

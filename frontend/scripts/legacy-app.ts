@@ -75,9 +75,9 @@ type DiscussionJumpTarget = {
 const MAX_PROJECT_REF_HISTORY = 10;
 const MIN_SIDEBAR_WIDTH = 248;
 const MAX_SIDEBAR_WIDTH = 360;
-const LOCAL_CONFIG_CACHE_KEY = 'gitlab-tracker:config-cache';
-const UI_PREFERENCES_KEY = 'gitlab-tracker:ui-preferences';
-const ARRANGE_PROMPT_TEMPLATES_KEY = 'gitlab-tracker:arrange-prompt-templates';
+const LOCAL_CONFIG_CACHE_KEY = 'repo-radar:config-cache';
+const UI_PREFERENCES_KEY = 'repo-radar:ui-preferences';
+const ARRANGE_PROMPT_TEMPLATES_KEY = 'repo-radar:arrange-prompt-templates';
 const DEFAULT_GEMINI_MODEL_LIST = [
   'gemini-2.5-pro',
   'gemini-3.5-flash',
@@ -948,7 +948,7 @@ async function applyAppVersionLabel(): Promise<void> {
   try {
     const version = await window.trackerBridge.getAppVersion();
     versionLabel.textContent = `v${version}`;
-    document.title = `Gitlab Tracker v${version}`;
+    document.title = `Repo Radar v${version}`;
   } catch (error) {
     console.warn('Failed to load app version', error);
   }

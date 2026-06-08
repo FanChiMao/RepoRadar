@@ -154,11 +154,11 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
-# Gitlab Tracker local runtime and build output
+# Repo Radar local runtime and build output
 backend/data/
 backend/build/
 backend/dist/
 release/
-Start-GitlabTracker.bat
+Start-RepoRadar.bat
 *.tmp
 *.temp

@@ -1,6 +1,6 @@
 # Architecture
 
-Gitlab Tracker 採 Electron main process、partial-based frontend 與 Python FastAPI backend 三層架構。GitLab 與 GitHub 透過共用 Issue Provider contract 接入；Dashboard、Analytics、RAG、Arrange 與報表主要消費 normalized cache。
+Repo Radar 採 Electron main process、partial-based frontend 與 Python FastAPI backend 三層架構。GitLab 與 GitHub 透過共用 Issue Provider contract 接入；Dashboard、Analytics、RAG、Arrange 與報表主要消費 normalized cache。
 
 ## 文件導覽
 

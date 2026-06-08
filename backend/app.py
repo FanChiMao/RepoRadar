@@ -1728,7 +1728,7 @@ def get_report_html() -> dict[str, Any]:
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
-<title>Gitlab Tracker 週報 — {generated_at}</title>
+<title>Repo Radar 週報 — {generated_at}</title>
 <style>
   @page {{ margin: 15mm; }}
   body {{ font-family: -apple-system, 'Microsoft JhengHei', 'Segoe UI', sans-serif; color: #1a1a2e; font-size: 13px; line-height: 1.6; max-width: 900px; margin: 0 auto; padding: 20px; }}
@@ -1753,7 +1753,7 @@ def get_report_html() -> dict[str, Any]:
 </head>
 <body>
 
-<h1>Gitlab Tracker 週報</h1>
+<h1>Repo Radar 週報</h1>
 <div class="meta">產生時間：{generated_at} · 資料筆數：{len(issues)} · 最後同步：{meta.get('last_sync', 'N/A')}</div>
 
 <h2>1. 週摘要</h2>
@@ -1825,7 +1825,7 @@ def get_latest_report() -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Gitlab Tracker backend service")
+    parser = argparse.ArgumentParser(description="Repo Radar backend service")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--once", choices=["fetch", "weekly-report"], default=None)
     args = parser.parse_args()

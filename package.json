@@ -1,6 +1,6 @@
 {
-  "name": "gitlab-tracker",
-  "version": "1.2.4",
+  "name": "repo-radar",
+  "version": "1.2.5",
   "description": "GitLab and GitHub issue tracking, AI analysis, and reporting.",
   "main": "dist/src/main.js",
   "author": "OpenAI",
@@ -10,7 +10,7 @@
     "dev": "npm run build:ts && electron .",
     "format": "prettier --write \"*.{json,md}\" \"src/**/*.ts\" \"frontend/**/*.{ts,html,css}\" && .venv\\Scripts\\python -m black backend",
     "format:check": "prettier --check \"*.{json,md}\" \"src/**/*.ts\" \"frontend/**/*.{ts,html,css}\" && .venv\\Scripts\\python -m black --check backend",
-    "pack:backend": "python -m PyInstaller --noconfirm --onedir --name gitlab-tracker-backend --hidden-import uvicorn.logging --hidden-import uvicorn.lifespan --hidden-import uvicorn.lifespan.on --hidden-import uvicorn.protocols --hidden-import uvicorn.protocols.http --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.http.h11_impl --hidden-import uvicorn.protocols.http.httptools_impl --hidden-import uvicorn.protocols.websockets --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.protocols.websockets.wsproto_impl --hidden-import uvicorn.loops --hidden-import uvicorn.loops.auto --hidden-import uvicorn.loops.asyncio backend/app.py --distpath backend/dist --workpath backend/build --specpath backend",
+    "pack:backend": "python -m PyInstaller --noconfirm --onedir --name repo-radar-backend --hidden-import uvicorn.logging --hidden-import uvicorn.lifespan --hidden-import uvicorn.lifespan.on --hidden-import uvicorn.protocols --hidden-import uvicorn.protocols.http --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.http.h11_impl --hidden-import uvicorn.protocols.http.httptools_impl --hidden-import uvicorn.protocols.websockets --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.protocols.websockets.wsproto_impl --hidden-import uvicorn.loops --hidden-import uvicorn.loops.auto --hidden-import uvicorn.loops.asyncio backend/app.py --distpath backend/dist --workpath backend/build --specpath backend",
     "pack": "npm run build:ts && npm run pack:backend && electron-builder --dir",
     "dist": "npm run build:ts && npm run pack:backend && electron-builder"
   },
@@ -22,8 +22,8 @@
     "typescript": "^5.8.3"
   },
   "build": {
-    "appId": "com.openai.gitlabtracker",
-    "productName": "Gitlab Tracker",
+    "appId": "com.openai.reporadar",
+    "productName": "Repo Radar",
     "directories": {
       "output": "release"
     },
@@ -52,8 +52,9 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "FanChiMao",
-      "repo": "GitlabTracker"
+      "owner": "FanChiMao, Wes Chen",
+      "repo": "RepoRadar",
+      "releaseType": "release"
     }
   },
   "dependencies": {

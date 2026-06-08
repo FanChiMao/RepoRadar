@@ -2,7 +2,7 @@
 
 ## 安全模型
 
-Gitlab Tracker 是單機桌面應用程式。Electron 啟動 FastAPI backend，backend 只 bind `127.0.0.1:8765`。
+Repo Radar 是單機桌面應用程式。Electron 啟動 FastAPI backend，backend 只 bind `127.0.0.1:8765`。
 
 ```text
 User -> Electron -> loopback FastAPI

@@ -4,12 +4,12 @@
 
 - Windows 10/11
 - Node.js 18+
-- Python 3.12（`Start-GitlabTracker.bat` 會檢查）
+- Python 3.12（`Start-RepoRadar.bat` 會檢查）
 - Git
 
 ## 快速啟動
 
-執行 `Start-GitlabTracker.bat`，它會檢查 `npm.cmd` 與 Python 3.12、建立 `.venv`、安裝 `backend/requirements.txt`、必要時執行 `npm ci`，最後執行 `npm.cmd run dev`。
+執行 `Start-RepoRadar.bat`，它會檢查 `npm.cmd` 與 Python 3.12、建立 `.venv`、安裝 `backend/requirements.txt`、必要時執行 `npm ci`，最後執行 `npm.cmd run dev`。
 
 手動設定：
 
@@ -49,10 +49,10 @@ Backend API：`http://127.0.0.1:8765`；Swagger UI：`http://127.0.0.1:8765/docs
 .\.venv\Scripts\python.exe backend\app.py --once weekly-report
 ```
 
-可用 `GITLAB_TRACKER_DATA_DIR` 覆寫 `backend/data/`：
+可用 `REPO_RADAR_DATA_DIR` 覆寫 `backend/data/`：
 
 ```powershell
-$env:GITLAB_TRACKER_DATA_DIR = "D:\tracker-data"
+$env:REPO_RADAR_DATA_DIR = "D:\repo-radar-data"
 .\.venv\Scripts\python.exe backend\app.py
 ```
 

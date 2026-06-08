@@ -31,7 +31,7 @@ class GitHubIssueProvider:
             {
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "GitlabTracker",
+                "User-Agent": "RepoRadar",
             }
         )
         if token:

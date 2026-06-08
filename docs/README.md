@@ -1,6 +1,6 @@
-# Gitlab Tracker 文件導覽
+# Repo Radar 文件導覽
 
-本目錄記錄 Gitlab Tracker 的產品行為、架構、Issue Provider、API、安全、品質與操作方式。實作以 `src/`、`frontend/`、`backend/` 與 `backend/tests/` 為準。
+本目錄記錄 Repo Radar 的產品行為、架構、Issue Provider、API、安全、品質與操作方式。實作以 `src/`、`frontend/`、`backend/` 與 `backend/tests/` 為準。
 
 ## 文件索引
 
@@ -24,7 +24,7 @@
 
 ## 文件維護原則
 
-- 產品名稱、套件名稱與 executable 維持 `Gitlab Tracker`。
+- 產品名稱、套件名稱與 executable 維持 `Repo Radar`。
 - 通用行為使用 Issue Provider、MR/PR 等中性用語；僅在平台專屬行為使用 GitLab 或 GitHub。
 - API、config、cache schema、模型清單、測試數量與 CI 行為變更時，需同步更新相關文件。
 - `.github/skills/**` 為通用設計技能資料，不屬於本專案開發文件。
