@@ -52,7 +52,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "FanChiMao, Wes Chen",
+      "owner": "FanChiMao",
       "repo": "RepoRadar",
       "releaseType": "release"
     }
