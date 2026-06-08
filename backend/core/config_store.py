@@ -37,7 +37,7 @@ MAX_PROJECT_REF_HISTORY = 10
 
 
 def data_dir() -> Path:
-    root = os.environ.get("GITLAB_TRACKER_DATA_DIR")
+    root = os.environ.get("REPO_RADAR_DATA_DIR")
     base = Path(root) if root else Path(__file__).resolve().parents[1] / "data"
     base.mkdir(parents=True, exist_ok=True)
     return base

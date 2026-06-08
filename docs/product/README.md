@@ -1,6 +1,6 @@
 # Product
 
-Gitlab Tracker 將單一 GitLab project 或 GitHub repository 的 Issues 集中到桌面應用程式，提供同步、分析、Issue Detail、RAG Chat、Arrange 與報表。
+Repo Radar 將單一 GitLab project 或 GitHub repository 的 Issues 集中到桌面應用程式，提供同步、分析、Issue Detail、RAG Chat、Arrange 與報表。
 
 ## 文件導覽
 

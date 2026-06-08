@@ -1,6 +1,6 @@
 # API Spec
 
-Gitlab Tracker backend 是本機 FastAPI 服務。
+Repo Radar backend 是本機 FastAPI 服務。
 
 - Base URL：`http://127.0.0.1:8765`
 - Swagger UI：`http://127.0.0.1:8765/docs`

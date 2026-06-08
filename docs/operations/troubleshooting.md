@@ -55,5 +55,5 @@ Excel 匯出失敗時重新安裝 `backend/requirements.txt`，確認 `openpyxl`
 ## Reports、Scheduler 與資料
 
 - Scheduler 只在 App 開啟時執行，並以 `meta.json.scheduler` 同日去重。
-- 開發資料在 `backend/data/`，封裝版在 `userData/tracker-data/`。
+- 開發資料在 `backend/data/`，封裝版在 `userData/repo-radar-data/`。
 - PDF 無反應時先確認 `GET /api/report/html` 有內容，再重試 Electron 匯出。

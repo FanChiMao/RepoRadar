@@ -366,8 +366,8 @@ function startBackend(): Promise<void> {
     const packagedExe = path.join(
       root,
       'dist',
-      'gitlab-tracker-backend',
-      process.platform === 'win32' ? 'gitlab-tracker-backend.exe' : 'gitlab-tracker-backend',
+      'repo-radar-backend',
+      process.platform === 'win32' ? 'repo-radar-backend.exe' : 'repo-radar-backend',
     );
 
     let command = 'python';
@@ -397,7 +397,7 @@ function startBackend(): Promise<void> {
 
     // For packaged app, use a writable user data dir; for dev, use backend/data
     const dataDir = app.isPackaged
-      ? path.join(app.getPath('userData'), 'tracker-data')
+      ? path.join(app.getPath('userData'), 'repo-radar-data')
       : path.join(root, 'data');
 
     // Ensure data dir exists
@@ -432,7 +432,7 @@ function startBackend(): Promise<void> {
       stdio: 'pipe',
       env: {
         ...process.env,
-        GITLAB_TRACKER_DATA_DIR: dataDir,
+        REPO_RADAR_DATA_DIR: dataDir,
       },
     });
 
@@ -529,6 +529,6 @@ ipcMain.handle('app:getVersion', async () => app.getVersion());
 
 bootstrap().catch((error) => {
   console.error(error);
-  dialog.showErrorBox('Gitlab Tracker 啟動失敗', String(error));
+  dialog.showErrorBox('Repo Radar 啟動失敗', String(error));
   app.quit();
 });

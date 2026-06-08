@@ -164,7 +164,7 @@ def generate_weekly_markdown(
     summary = dashboard["summary"]
 
     lines = [
-        "# Gitlab Tracker 週報",
+        "# Repo Radar 週報",
         "",
         f'- 產生時間：{generated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")}',
         f'- 本週新增：{summary["weekly_new_count"]}',

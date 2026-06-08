@@ -43,5 +43,5 @@ jobs:
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: gitlab-tracker-release
+          name: repo-radar-release
           path: release/

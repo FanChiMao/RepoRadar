@@ -1,8 +1,8 @@
-# Gitlab Tracker Product Requirements Document
+# Repo Radar Product Requirements Document
 
 ## 產品目標
 
-Gitlab Tracker 讓 PM、Tech Lead 與工程師從 GitLab 或 GitHub Issue 資料建立一致的專案視圖，降低跨 Issue、comments/discussions、MR/PR、milestone 與報表整理成本。
+Repo Radar 讓 PM、Tech Lead 與工程師從 GitLab 或 GitHub Issue 資料建立一致的專案視圖，降低跨 Issue、comments/discussions、MR/PR、milestone 與報表整理成本。
 
 ## 使用者
 
