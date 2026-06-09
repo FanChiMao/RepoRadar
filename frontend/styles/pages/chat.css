@@ -32,7 +32,40 @@
   display: none;
 }
 
-.chat-panel {
+#view-assistant .hero {
+  flex: 0 0 auto;
+}
+
+/* The page hosts the chat surface in this mount; the surface can also be moved
+   into the floating dock and back without losing state. */
+.assistant-mount {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* In-page chat surface (the AI 助理 workspace view). Fills the area below the
+   hero and keeps the conversation in a comfortable centered column. */
+.chat-surface {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  max-width: 1040px;
+  margin: 8px auto 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--glass-bg);
+  border: 1px solid var(--border-glass-highlight);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-highlight), var(--shadow-sm);
+  overflow: hidden;
+  animation: chatSlideUp 0.3s var(--ease-out);
+}
+
+/* ── Floating dock (compact, bottom-right) ── */
+.chat-dock {
   position: fixed;
   bottom: 24px;
   right: 24px;
@@ -53,74 +86,114 @@
   flex-direction: column;
   overflow: hidden;
   animation: chatSlideUp 0.3s var(--ease-out);
-  transition:
-    right var(--duration-slow) var(--ease-out),
-    left var(--duration-slow) var(--ease-out),
-    width var(--duration-slow) var(--ease-out),
-    max-width var(--duration-slow) var(--ease-out),
-    transform var(--duration-slow) var(--ease-out);
 }
-.chat-panel.open {
+.chat-dock.open {
   display: flex;
 }
-@keyframes chatSlideUp {
-  from {
-    opacity: 0;
-    transform: translateY(16px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.chat-panel-header {
+.chat-dock-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border-glass);
   flex-shrink: 0;
 }
-.chat-panel-header h3 {
+.chat-dock-title {
+  margin: 0;
   font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
-  margin: 0;
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.beta-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 7px;
-  border-radius: 999px;
-  border: 1px solid rgba(251, 191, 36, 0.28);
-  background: rgba(251, 191, 36, 0.12);
-  color: #fcd34d;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  line-height: 1;
-}
-.chat-panel-header h3::before {
-  content: '✨';
-}
-.chat-header-actions {
+.chat-dock-actions {
   display: flex;
   gap: 4px;
 }
-.chat-header-btn {
+.chat-dock-btn {
   width: 28px;
   height: 28px;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 14px;
   border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    background 0.18s ease;
+}
+.chat-dock-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+.chat-dock-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* When the surface lives inside the dock, drop its own card chrome — the dock
+   provides the frame. */
+.chat-dock-body .chat-surface {
+  max-width: none;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+@keyframes chatSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-glass);
+  flex-shrink: 0;
+}
+.chat-toolbar .chat-mode-area,
+.chat-toolbar .chat-model-area {
+  padding: 0;
+  border: none;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.chat-toolbar-clear {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 7px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-glass);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease;
+}
+.chat-toolbar-clear:hover {
+  color: var(--text-primary);
+  border-color: rgba(167, 139, 250, 0.4);
 }
 
 .chat-messages {
@@ -139,6 +212,59 @@
 
 .chat-rag-state.is-visible {
   display: block;
+}
+
+.chat-mode-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px 0;
+  flex-shrink: 0;
+}
+
+.chat-mode-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.chat-mode-segmented {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid var(--border-glass);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.chat-mode-btn {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.chat-mode-btn:hover {
+  color: var(--text-primary);
+}
+
+.chat-mode-btn.is-active {
+  background: rgba(167, 139, 250, 0.22);
+  color: var(--text-primary);
 }
 
 .chat-model-area {
@@ -306,7 +432,7 @@ html[data-theme='light'] .chat-rag-state.fallback .chat-rag-state__card {
 .chat-msg {
   display: flex;
   flex-direction: column;
-  max-width: 92%;
+  max-width: min(92%, 760px);
 }
 .chat-msg.user {
   align-self: flex-end;
@@ -411,32 +537,213 @@ html[data-theme='light'] .chat-rag-state.fallback .chat-rag-state__card {
   align-items: center;
   gap: 6px;
   margin: 6px 8px 0 0;
-  padding: 4px 0;
-  border: none;
-  background: transparent;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  border-radius: var(--radius-full);
+  background: rgba(96, 165, 250, 0.08);
   color: #60a5fa;
   font-size: 12px;
-  line-height: 1.2;
+  line-height: 1.4;
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
   transition:
-    color 0.18s ease,
-    opacity 0.18s ease;
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.chat-source-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: rgba(96, 165, 250, 0.22);
+  color: #93c5fd;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.chat-source-id {
+  font-weight: 600;
+}
+
+.chat-source-type {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: rgba(96, 165, 250, 0.14);
+  color: #9ec5fe;
+  font-size: 10.5px;
+  font-weight: 600;
 }
 
 .chat-source-ref:hover {
+  background: rgba(96, 165, 250, 0.16);
+  border-color: rgba(96, 165, 250, 0.45);
   color: #93c5fd;
 }
 
 .chat-source-ref:active {
-  color: #bfdbfe;
+  background: rgba(96, 165, 250, 0.24);
 }
 
 .chat-source-ref:focus-visible {
   outline: 2px solid rgba(96, 165, 250, 0.45);
-  outline-offset: 3px;
-  border-radius: 4px;
+  outline-offset: 2px;
+}
+
+.chat-timeline {
+  list-style: none;
+  margin: 10px 0;
+  padding: 0 0 0 6px;
+}
+
+.chat-timeline-item {
+  position: relative;
+  padding: 0 0 16px 22px;
+}
+
+/* Connecting line segment between nodes. */
+.chat-timeline-item::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 4px;
+  bottom: -4px;
+  width: 2px;
+  background: rgba(96, 165, 250, 0.28);
+}
+
+.chat-timeline-item:last-child {
+  padding-bottom: 2px;
+}
+
+.chat-timeline-item:last-child::before {
+  display: none;
+}
+
+.chat-timeline-node {
+  position: absolute;
+  left: 0;
+  top: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bg-glass, #1a2238);
+  border: 2px solid #60a5fa;
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.12);
+}
+
+.chat-timeline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-timeline-date {
+  font-size: 11px;
+  font-weight: 700;
+  color: #93c5fd;
+  letter-spacing: 0.02em;
+}
+
+.chat-timeline-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+/* ── 建議下一步 checklist ── */
+.chat-checklist-block {
+  margin: 8px 0 4px;
+}
+.chat-checklist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 6px;
+}
+.chat-checklist-head h3 {
+  margin: 0;
+}
+.chat-copy-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-glass);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+.chat-copy-btn:hover {
+  color: var(--text-primary);
+  border-color: rgba(167, 139, 250, 0.4);
+}
+.chat-copy-btn.is-copied {
+  color: #6ee7b7;
+  border-color: rgba(110, 231, 183, 0.45);
+  background: rgba(110, 231, 183, 0.1);
+}
+.chat-copy-btn svg {
+  width: 13px;
+  height: 13px;
+}
+.chat-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.chat-check-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+  font-size: calc(12.5px * var(--font-scale));
+  line-height: 1.5;
+}
+.chat-check-box {
+  /* Reset the global `input` chrome (base.css: padding 9px 12px, border,
+     background, box-shadow + the `* { box-sizing: border-box }` reset). Without
+     this the checkbox inherits that padding/border and the native glyph is
+     pushed up inside an inflated box — which is what made it sit too high.
+     box-sizing:content-box + width/height keep the box tight to the glyph. */
+  box-sizing: content-box;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  border-radius: 0;
+  /* font-size:inherit ties the box's em to the checklist text, overriding the
+     global `input { font-size: 13px }` rule. margin-top = (line-height 1.5em −
+     box 1.05em) / 2 centres it on the FIRST line, so it stays aligned even when
+     an item wraps (e.g. the narrow docked window). All em-based → tracks
+     --font-scale. */
+  font-size: inherit;
+  width: 1.05em;
+  height: 1.05em;
+  margin: 0.22em 0 0;
+  flex-shrink: 0;
+  accent-color: #a78bfa;
+  cursor: pointer;
+}
+.chat-check-text {
+  color: var(--text-primary);
+}
+.chat-check-box:checked + .chat-check-text {
+  text-decoration: line-through;
+  opacity: 0.55;
 }
 
 .chat-suggestions {
@@ -550,11 +857,11 @@ html[data-theme='light'] .chat-rag-state.fallback .chat-rag-state__card {
   height: 24px;
 }
 
-.chat-panel.chat-panel-rag-locked .chat-messages {
+.chat-surface.chat-surface-rag-locked .chat-messages {
   opacity: 0.88;
 }
 
-.chat-panel.chat-panel-rag-locked .chat-input-area {
+.chat-surface.chat-surface-rag-locked .chat-input-area {
   border-top-color: rgba(124, 156, 255, 0.2);
 }
 

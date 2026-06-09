@@ -1,0 +1,99 @@
+<section id="view-assistant" class="workspace-view">
+  <section class="hero">
+    <div>
+      <div class="view-eyebrow">Views / AI 助理</div>
+      <h2 class="view-title">AI 助理</h2>
+      <p class="view-subtitle">
+        用自然語言查 Issue、追風險、展開脈絡。三種檢索模式： 自動、快速檢索、脈絡追蹤。
+      </p>
+    </div>
+  </section>
+
+  <div id="assistant-mount" class="assistant-mount">
+    <div id="chat-surface" class="chat-surface">
+      <div id="chat-messages" class="chat-messages">
+        <div class="chat-msg assistant">
+          <div class="chat-msg-content">
+            你可以直接問我目前 Issue 狀況、風險、誰最忙，或哪幾個 Issue 最值得優先追蹤。
+            <div class="chat-suggestions">
+              <button class="chat-suggestion-btn">這週最危險的是什麼？</button>
+              <button class="chat-suggestion-btn">誰的 issue 最久沒動？</button>
+              <button class="chat-suggestion-btn">目前逾期的 issue 有哪些？</button>
+              <button class="chat-suggestion-btn">各模組負責人的工作量？</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="chat-rag-state" class="chat-rag-state" aria-live="polite"></div>
+
+      <div class="chat-toolbar">
+        <div class="chat-mode-area">
+          <span class="chat-mode-label">檢索模式</span>
+          <div
+            id="chat-retrieval-mode"
+            class="chat-mode-segmented"
+            role="group"
+            aria-label="檢索模式"
+          >
+            <button
+              type="button"
+              class="chat-mode-btn"
+              data-mode="auto"
+              title="依問題類型自動選擇回答方式"
+            >
+              自動
+            </button>
+            <button
+              type="button"
+              class="chat-mode-btn"
+              data-mode="fast-rag"
+              title="適合查詢功能、狀態、清單與一般問題"
+            >
+              快速檢索
+            </button>
+            <button
+              type="button"
+              class="chat-mode-btn"
+              data-mode="context-trace"
+              title="適合追問原因、卡點、演變與決策脈絡"
+            >
+              脈絡追蹤
+            </button>
+          </div>
+        </div>
+        <div class="chat-model-area">
+          <label for="chat-rag-model-select">自然語言模型</label>
+          <select id="chat-rag-model-select" title="選擇這次 AI Chat 使用的自然語言模型"></select>
+        </div>
+        <button id="chat-clear" class="chat-toolbar-clear" type="button" title="清除對話">
+          清除對話
+        </button>
+      </div>
+
+      <div class="chat-input-area">
+        <input
+          id="chat-input"
+          type="text"
+          placeholder="輸入你想查的 Issue 問題..."
+          autocomplete="off"
+        />
+        <button id="chat-send" class="chat-send-btn" title="送出">
+          <svg
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <line x1="22" y1="2" x2="11" y2="13" />
+            <polygon points="22 2 15 22 11 13 2 9 22 2" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</section>

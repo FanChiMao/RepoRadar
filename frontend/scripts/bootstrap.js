@@ -2,8 +2,10 @@ const partials = [
   ['sidebar-root', './partials/sidebar.html'],
   ['content-root', './partials/dashboard.html', 'append'],
   ['content-root', './partials/arrange.html', 'append'],
+  ['content-root', './partials/assistant.html', 'append'],
   ['content-root', './partials/connections.html', 'append'],
   ['content-root', './partials/preferences.html', 'append'],
+  ['content-root', './partials/briefing.html', 'append'],
   ['overlay-root', './partials/overlays.html'],
 ];
 

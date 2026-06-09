@@ -1,0 +1,406 @@
+/* ── Daily Issue Briefing (專案脈搏) ── */
+/* The view inherits `overflow: hidden` from .workspace-view.active; let the
+   whole page scroll so the Preview / History below the fold stay reachable. */
+#view-briefing.workspace-view.active {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#view-briefing .page-hero {
+  flex: 0 0 auto;
+}
+
+.briefing-panel {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.briefing-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.briefing-field > label {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.briefing-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.briefing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.briefing-workdays,
+.briefing-includes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.briefing-workdays .checkbox-row,
+.briefing-includes .checkbox-row,
+.briefing-inline .checkbox-row,
+.section-title-row .checkbox-row {
+  width: auto;
+}
+#briefing-preview-output {
+  width: 100%;
+  /* Override .arrange-textarea's fixed 220px so a long briefing shows more at
+     once; cap to the viewport and scroll the rest. */
+  height: 360px;
+  max-height: 60vh;
+  resize: vertical;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+.briefing-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.briefing-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-glass);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.briefing-history-row .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.briefing-history-row .dot.ok {
+  background: #6ee7b7;
+}
+.briefing-history-row .dot.fail {
+  background: #f87171;
+}
+.briefing-history-row .meta {
+  color: var(--text-muted);
+}
+.briefing-history-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ── Project Pulse (專案脈搏) center ── */
+.pulse-summary {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  flex: 0 0 auto;
+}
+.pulse-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-glass);
+  border-radius: 12px;
+  background: var(--bg-surface-2);
+}
+.pulse-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--bg-surface-3);
+  color: var(--text-secondary);
+}
+.pulse-card-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.pulse-icon-ok {
+  color: #34d399;
+}
+.pulse-icon-info {
+  color: var(--accent);
+}
+.pulse-icon-fail {
+  color: #f87171;
+}
+.pulse-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pulse-card-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pulse-card-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.pulse-panel {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pulse-table-wrap {
+  overflow-x: auto;
+}
+.pulse-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.pulse-table th,
+.pulse-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-glass);
+  white-space: nowrap;
+}
+.pulse-table th {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.pulse-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+.pulse-empty {
+  text-align: center !important;
+  color: var(--text-muted);
+  padding: 24px 10px !important;
+}
+.pulse-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pulse-status .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.pulse-status .dot.on {
+  background: #6ee7b7;
+}
+.pulse-status .dot.off {
+  background: var(--text-muted);
+}
+.pulse-run-ok {
+  color: #6ee7b7;
+}
+.pulse-run-fail {
+  color: #f87171;
+}
+.pulse-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pulse-row-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+.pulse-row-actions .danger {
+  color: #f87171;
+}
+
+/* Modal overlay */
+.pulse-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: none;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 16px;
+  background: rgba(0, 0, 0, 0.55);
+  overflow-y: auto;
+}
+.pulse-overlay.open {
+  display: flex;
+}
+.pulse-modal {
+  width: min(720px, 100%);
+  background: var(--glass-bg-heavy);
+  backdrop-filter: blur(36px) saturate(1.5);
+  -webkit-backdrop-filter: blur(36px) saturate(1.5);
+  border: 1px solid var(--border-glass-highlight);
+  border-radius: 14px;
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 80px);
+}
+.pulse-modal-narrow {
+  width: min(560px, 100%);
+}
+.pulse-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border-glass);
+}
+.pulse-modal-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.pulse-close-btn {
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 8px;
+}
+.pulse-modal-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pulse-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border-glass);
+}
+.pulse-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  /* Faint divider above each section to visually group its fields. */
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-glass);
+}
+/* The first section sits right under the modal header — no divider needed. */
+.pulse-section-label:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+.pulse-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.pulse-enable-row {
+  width: auto;
+}
+
+/* Toggle switch (reuses the checkbox semantics so the TS stays unchanged). */
+.pulse-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  width: auto;
+}
+.pulse-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.pulse-toggle-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--bg-surface-3);
+  border: 1px solid var(--border-glass);
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+.pulse-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition:
+    transform 0.18s ease,
+    background 0.18s ease;
+}
+.pulse-toggle input:checked + .pulse-toggle-track {
+  background: var(--accent, #4f7cff);
+  border-color: var(--accent, #4f7cff);
+}
+.pulse-toggle input:checked + .pulse-toggle-track .pulse-toggle-thumb {
+  transform: translateX(16px);
+  background: #fff;
+}
+.pulse-toggle input:focus-visible + .pulse-toggle-track {
+  outline: 2px solid var(--accent, #4f7cff);
+  outline-offset: 2px;
+}
+.pulse-toggle-label {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+/* Loading spinner for slow (LLM) generation. */
+.pulse-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-glass);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: pulse-spin 0.7s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes pulse-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+#pulse-preview-output {
+  width: 100%;
+  height: 360px;
+  max-height: 55vh;
+  resize: vertical;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+
+@media (max-width: 900px) {
+  .pulse-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pulse-grid {
+    grid-template-columns: 1fr;
+  }
+}
