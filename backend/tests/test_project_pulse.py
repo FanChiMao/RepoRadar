@@ -48,6 +48,17 @@ class StoreTests(PulsePathMixin):
         )
         self.assertEqual(store.DEFAULT_CUSTOM_INSTRUCTION, custom["custom_instruction"])
 
+    def test_legacy_daily_instruction_migrates_to_current_default(self) -> None:
+        schedule = store.normalize_schedule(
+            {
+                "report_type": "daily-briefing",
+                "custom_instruction": store.LEGACY_DAILY_INSTRUCTION,
+            }
+        )
+        self.assertEqual(
+            store.DEFAULT_DAILY_INSTRUCTION, schedule["custom_instruction"]
+        )
+
     def test_update_preserves_webhook_when_empty_and_clears_on_flag(self) -> None:
         self.patch_store()
         created = store.create_schedule(
@@ -143,6 +154,43 @@ class WindowTests(unittest.TestCase):
         selected = service.select_issues_in_window(issues, schedule, now=now)
         self.assertEqual({1, 3}, {i["iid"] for i in selected})
 
+    def test_today_window_includes_index_chunk_changes(self) -> None:
+        now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
+        issues = [
+            {"iid": 1, "updated_at": "2026-06-01T10:00:00+08:00"},
+            {"iid": 2, "updated_at": "2026-06-01T10:00:00+08:00"},
+        ]
+        index = {
+            "chunks": [
+                {
+                    "chunk_id": "issue-2-discussion-1",
+                    "issue_iid": 2,
+                    "source_type": "discussion",
+                    "text": "new note",
+                    "metadata": {"updated_at": "2026-06-08T11:00:00+08:00"},
+                }
+            ]
+        }
+        schedule = {"updated_issue_window": "today", "timezone": "Asia/Taipei"}
+        selected = service.select_issues_in_window(
+            issues, schedule, index=index, now=now
+        )
+        self.assertEqual({2}, {i["iid"] for i in selected})
+
+    def test_today_window_includes_closed_issues(self) -> None:
+        now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
+        issues = [
+            {
+                "iid": 9,
+                "state": "closed",
+                "updated_at": "2026-06-01T10:00:00+08:00",
+                "closed_at": "2026-06-08T12:00:00+08:00",
+            }
+        ]
+        schedule = {"updated_issue_window": "today", "timezone": "Asia/Taipei"}
+        selected = service.select_issues_in_window(issues, schedule, now=now)
+        self.assertEqual({9}, {i["iid"] for i in selected})
+
     def test_last_7_days_window(self) -> None:
         now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
         issues = [
@@ -196,6 +244,7 @@ class GenerationTests(unittest.TestCase):
             "id": "s1",
             "repo_id": "r1",
             "repo_name": "RepoRadar",
+            "name": "Frontend Daily Issue Briefing",
             "report_type": "daily-briefing",
             "custom_instruction": "請整理成主管版",
             "timezone": "Asia/Taipei",
@@ -219,6 +268,9 @@ class GenerationTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(0, report["issue_count"])
         self.assertIn("沒有", report["message"])
+        self.assertIn(
+            "本次整理使用模型：未使用 LLM（規則式 fallback）", report["message"]
+        )
         self.assertEqual("cache", report["mode"])
 
     def test_rule_based_report_lists_issues(self) -> None:
@@ -236,8 +288,40 @@ class GenerationTests(unittest.TestCase):
             self._schedule(), issues=issues, index={}, now=now
         )
         self.assertEqual(1, report["issue_count"])
+        self.assertEqual("Frontend Daily Issue Briefing", report["title"])
         self.assertIn("#24", report["message"])
         self.assertIn("https://example.com/issues/24", report["message"])
+        self.assertIn(
+            "本次整理使用模型：未使用 LLM（規則式 fallback）", report["message"]
+        )
+
+    def test_llm_report_appends_used_model_hint(self) -> None:
+        def fake_llm(**_kwargs):
+            return ("主管摘要", "gpt-5.4")
+
+        now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
+        issues = [
+            {
+                "iid": 88,
+                "title": "Model hint",
+                "state": "opened",
+                "updated_at": "2026-06-08T09:00:00+08:00",
+            }
+        ]
+        report = service.generate_pulse_report(
+            self._schedule(),
+            issues=issues,
+            index={},
+            llm_caller=fake_llm,
+            llm_preferred_model="Kimi-K2.5",
+            now=now,
+        )
+        self.assertEqual("gpt-5.4", report["model"])
+        self.assertTrue(report["message"].startswith("主管摘要"))
+        self.assertIn(
+            "本次整理使用模型：gpt-5.4（原選 Kimi-K2.5，已自動切換）",
+            report["message"],
+        )
 
     def test_safety_prompt_and_no_webhook_leak(self) -> None:
         captured: dict = {}
@@ -277,6 +361,55 @@ class GenerationTests(unittest.TestCase):
         blob = captured["system"] + user_text
         self.assertNotIn("SUPERSECRET", blob)
         self.assertNotIn("example.com/hook", blob)
+
+    def test_daily_llm_prompt_includes_change_details(self) -> None:
+        captured: dict = {}
+
+        def fake_llm(*, system_instruction, contents, **_kwargs):
+            captured["system"] = system_instruction
+            captured["contents"] = contents
+            return ('{"answer":"報告"}', "fake-model")
+
+        now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
+        issues = [
+            {
+                "iid": 5,
+                "title": "Update onboarding docs",
+                "state": "closed",
+                "updated_at": "2026-06-08T09:00:00+08:00",
+                "closed_at": "2026-06-08T10:00:00+08:00",
+                "description": "新的 description",
+                "user_notes_count": 2,
+            }
+        ]
+        index = {
+            "built_at": "2026-06-08T12:00:00Z",
+            "chunks": [
+                {
+                    "chunk_id": "issue-5-discussion-1",
+                    "issue_iid": 5,
+                    "title": "Update onboarding docs",
+                    "source_type": "discussion",
+                    "text": "[2026-06-08T09:30:00] Dodo (note:101): 已補上文件細節",
+                    "metadata": {
+                        "updated_at": "2026-06-08T09:30:00+08:00",
+                        "note_ids": [101],
+                    },
+                }
+            ],
+        }
+
+        service.generate_pulse_report(
+            self._schedule(), issues=issues, index=index, llm_caller=fake_llm, now=now
+        )
+
+        user_text = captured["contents"][0]["parts"][0]["text"]
+        self.assertIn("本期更新", captured["system"])
+        self.assertIn("issue 已關閉", user_text)
+        self.assertIn("issue 本體更新", user_text)
+        self.assertIn("新增或更新留言", user_text)
+        self.assertIn("closed_at=2026-06-08T10:00:00+08:00", user_text)
+        self.assertIn("note_ids=[101]", user_text)
 
 
 # --------------------------------------------------------------------------- #

@@ -60,6 +60,41 @@ class MaskAndSenderTests(BriefingPathMixin):
         self.assertFalse(result["ok"])
         self.assertNotIn("http", (result["error"] or ""))
 
+    def test_format_teams_markdown_links(self) -> None:
+        message = (
+            "Issue 標題與來源連結：[Predict Page] 上傳不合格式的圖片沒有 error message "
+            "(#748) - http://172.22.137.46:8000/products/frontend/-/work_items/748\n"
+            "一般說明：https://example.com/path?q=1。"
+        )
+        formatted = briefing.format_teams_markdown_links(message)
+        self.assertIn(
+            "Issue 標題與來源連結：[Predict Page] 上傳不合格式的圖片沒有 error message "
+            "(#748) - [來源連結](http://172.22.137.46:8000/products/frontend/-/work_items/748)",
+            formatted,
+        )
+        self.assertIn("一般說明：[連結](https://example.com/path?q=1)。", formatted)
+
+    def test_format_teams_markdown_links_keeps_existing_links(self) -> None:
+        message = "來源：[既有連結](https://example.com/issues/1)"
+        self.assertEqual(message, briefing.format_teams_markdown_links(message))
+
+    def test_send_teams_webhook_formats_links_in_payload(self) -> None:
+        with patch("backend.core.daily_briefing_service.requests.post") as post:
+            post.return_value.status_code = 202
+            post.return_value.raise_for_status.return_value = None
+
+            result = briefing.send_teams_webhook(
+                "https://example.com/hook?sig=secret",
+                "title",
+                "來源：https://example.com/issues/1",
+            )
+
+        self.assertTrue(result["ok"])
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(
+            "來源：[來源連結](https://example.com/issues/1)", payload["message"]
+        )
+
 
 class SettingsTests(BriefingPathMixin):
     def test_save_preserves_webhook_when_empty_and_clears_on_flag(self) -> None:

@@ -74,7 +74,18 @@ GitHub bulk list 不抓完整 relations，`relation_counts_known=false`；Issue 
 
 ## 排程
 
-`TrackerScheduler` 在 FastAPI lifespan 內每 30 秒檢查 daily sync 與 weekly report，並以 `meta.json.scheduler` 做同日去重。App 關閉時排程不會執行。
+`TrackerScheduler` 在 FastAPI lifespan 內每 30 秒檢查 daily sync、weekly report 與 AI 排程，並以 `meta.json.scheduler` 或排程自身的 `next_run_at` 做去重。App 關閉時排程不會執行。
+
+AI 排程使用 per-repo snapshot，避免多 repo context 混用：
+
+1. 一般同步完成後，backend 會 snapshot active repo 的 Issue cache 與 RAG index。
+2. AI 排程綁定 `repo_id`，preview / send-now / scheduled send 都從該 repo snapshot 讀取資料。
+3. Preview 一律走 background job，phase 為 `syncing`、`indexing`、`generating`。
+4. `syncing` 會嘗試同步排程綁定 repo 的最新 Issue，不依賴目前 active repo。
+5. `indexing` 會重建該 repo 的留言/RAG index；preview 永遠重建，send-now 依 `rebuild_index_before_send` 決定。
+6. `generating` 會依排程的 preferred model 與候選模型產生整理結果。
+
+Teams 發送共用 `send_teams_webhook`，送出前會把裸 URL 轉成 Markdown link，讓 Teams 顯示文字超連結。AI 排程結果的 title 使用排程名稱，message 結尾會標示本次整理使用的 LLM 模型或 fallback 狀態。
 
 ## 外部整合
 

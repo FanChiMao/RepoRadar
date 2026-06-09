@@ -11,6 +11,7 @@ string (an exception's text can echo the URL it failed to reach).
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, time, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -66,6 +67,8 @@ PROGRESS_KEYWORDS = (
 
 # Per-issue context budget so the prompt / message stays compact.
 _CONTEXT_BUDGET = {"discussion": 4, "related_change": 3, "issue_link": 3}
+_BARE_URL_RE = re.compile(r"(?<![\(<])https?://[^\s<>\]]+")
+_URL_TRAILING_PUNCTUATION = ".,;:!?，。；：！？)]）"
 
 
 # --------------------------------------------------------------------------- #
@@ -77,6 +80,31 @@ def mask_webhook_url(url: str | None) -> str:
     if not text:
         return ""
     return text[:32] + "...sig=********"
+
+
+def _split_url_trailing_punctuation(url: str) -> tuple[str, str]:
+    trailing = ""
+    while url and url[-1] in _URL_TRAILING_PUNCTUATION:
+        trailing = url[-1] + trailing
+        url = url[:-1]
+    return url, trailing
+
+
+def format_teams_markdown_links(message: str) -> str:
+    """Convert bare URLs to Teams-friendly Markdown links before delivery."""
+
+    def convert_line(line: str) -> str:
+        link_label = "來源連結" if "來源" in line or "連結" in line else "連結"
+
+        def replace(match: re.Match[str]) -> str:
+            url, trailing = _split_url_trailing_punctuation(match.group(0))
+            if not url:
+                return match.group(0)
+            return f"[{link_label}]({url}){trailing}"
+
+        return _BARE_URL_RE.sub(replace, line)
+
+    return "\n".join(convert_line(line) for line in str(message or "").splitlines())
 
 
 def send_teams_webhook(webhook_url: str, title: str, message: str) -> dict[str, Any]:
@@ -94,7 +122,7 @@ def send_teams_webhook(webhook_url: str, title: str, message: str) -> dict[str, 
     try:
         resp = requests.post(
             webhook_url,
-            json={"title": title, "message": message},
+            json={"title": title, "message": format_teams_markdown_links(message)},
             timeout=10,
         )
         resp.raise_for_status()

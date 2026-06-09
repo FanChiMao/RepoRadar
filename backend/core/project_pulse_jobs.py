@@ -1,4 +1,4 @@
-"""Background-job state for Project Pulse runs that rebuild the index first.
+"""Background-job state for AI Schedule runs that rebuild the index first.
 
 When a schedule has ``rebuild_index_before_send`` on, Send Now / Preview kick off
 a background job (sync → reindex → generate → optionally send) and return a

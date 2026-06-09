@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import threading
 import uuid
@@ -34,6 +35,23 @@ from core.config_store import (
 from core.daily_briefing_service import (
     generate_daily_briefing,
     send_teams_webhook,
+)
+from core.llm_providers import (
+    azure_model_names,
+    azure_protocol,
+    call_azure_anthropic,
+    call_azure_openai,
+    gemini_contents_to_messages,
+    is_azure_model,
+    is_vision_model,
+    pick_vision_model,
+)
+from core.image_fetch import (
+    ImageAsset,
+    download_images,
+    extract_image_urls,
+    project_web_base_from_issue_url,
+    resolve_image_url,
 )
 from core.gitlab_client import GitLabIssueClient
 from core.issue_arrange import (
@@ -79,7 +97,7 @@ from core import project_pulse_store as pulse_store
 from core import repo_registry
 from core.project_pulse_service import compute_next_run, generate_pulse_report
 from core.scheduler import TrackerScheduler
-from core.utils import read_json, utc_now, write_json
+from core.utils import parse_dt, read_json, utc_now, write_json
 
 
 class ConfigPayload(BaseModel):
@@ -122,6 +140,7 @@ class PulseSchedulePayload(BaseModel):
     name: str = "每日 Issue 摘要"
     report_type: str = "daily-briefing"
     custom_instruction: str = ""
+    preferred_model: str = ""
     send_time: str = "18:30"
     timezone: str = "Asia/Taipei"
     workdays: list[int] = [1, 2, 3, 4, 5]
@@ -230,6 +249,148 @@ def resolve_retrieval_mode(question: str, mode: str) -> str:
     if any(keyword.lower() in lowered for keyword in CONTEXT_TRACE_KEYWORDS):
         return "context-trace"
     return "fast-rag"
+
+
+def select_context_trace_issue_iids(
+    question: str,
+    rag_results: list[dict[str, Any]],
+    issues: list[dict[str, Any]],
+    index: dict[str, Any],
+    *,
+    top_n: int = 3,
+) -> list[int]:
+    """Pick issues for context-trace even when generic risk queries miss BM25."""
+    issue_scores: dict[int, float] = {}
+    for item in rag_results:
+        iid = item.get("issue_iid")
+        if iid is None:
+            continue
+        issue_scores[int(iid)] = issue_scores.get(int(iid), 0.0) + float(
+            item.get("score") or 0
+        )
+    if issue_scores:
+        return [
+            iid
+            for iid, _ in sorted(
+                issue_scores.items(), key=lambda kv: kv[1], reverse=True
+            )[:top_n]
+        ]
+
+    indexed_iids = {
+        int(chunk.get("issue_iid"))
+        for chunk in index.get("chunks", [])
+        if chunk.get("issue_iid") is not None
+    }
+    if not indexed_iids:
+        return []
+
+    lowered_question = (question or "").lower()
+    risk_query = any(
+        keyword in lowered_question
+        for keyword in ("風險", "危險", "到期", "逾期", "停滯", "risk", "due", "stale")
+    )
+    now = datetime.now(UTC)
+    scored: list[tuple[float, int]] = []
+    query_terms = {
+        term for term in re.split(r"\W+", lowered_question) if len(term) >= 2
+    }
+
+    for raw in issues:
+        try:
+            iid = int(raw.get("iid"))
+        except (TypeError, ValueError):
+            continue
+        if iid not in indexed_iids:
+            continue
+
+        score = 0.0
+        haystack = " ".join(
+            str(value or "")
+            for value in (
+                raw.get("title"),
+                raw.get("description"),
+                " ".join(raw.get("labels") or []),
+                (
+                    raw.get("milestone", {}).get("title")
+                    if isinstance(raw.get("milestone"), dict)
+                    else raw.get("milestone")
+                ),
+            )
+        ).lower()
+        score += sum(1.0 for term in query_terms if term in haystack)
+
+        if raw.get("state") != "closed":
+            score += 1.0
+
+        due_raw = raw.get("due_date") or (raw.get("milestone") or {}).get("due_date")
+        if due_raw:
+            score += 2.0
+            try:
+                due_dt = datetime.fromisoformat(str(due_raw)).replace(tzinfo=UTC)
+                days_until_due = (due_dt.date() - now.date()).days
+                if days_until_due < 0:
+                    score += 8.0
+                elif days_until_due <= 7:
+                    score += 6.0
+                elif days_until_due <= 14:
+                    score += 3.0
+            except ValueError:
+                pass
+
+        updated = parse_dt(raw.get("updated_at"))
+        if updated is not None:
+            stale_days = (now - updated.astimezone(UTC)).days
+            if stale_days >= 30:
+                score += 4.0
+            elif stale_days >= 14:
+                score += 2.0
+
+        if risk_query:
+            score += 1.0
+        scored.append((score, iid))
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [iid for score, iid in scored[:top_n] if score > 0]
+
+
+# Add enabled Azure models to each per-feature list so build_model_chain accepts
+# them, then route by model name inside the LLM call helpers.
+_AZURE_LLM_NAMES = azure_model_names()
+if _AZURE_LLM_NAMES:
+    for _llm_list in (
+        CHAT_RAG_LLM_MODELS,
+        ARRANGE_LLM_MODELS,
+        DISCUSSION_SUMMARY_LLM_MODELS,
+        DEFAULT_LLM_MODELS,
+    ):
+        _llm_list.extend(name for name in _AZURE_LLM_NAMES if name not in _llm_list)
+
+
+def call_azure_model(
+    model: str,
+    system_instruction: str,
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.2,
+    images: list[ImageAsset] | None = None,
+    json_mode: bool = True,
+) -> str:
+    """依模型的 protocol 路由到對應的 Azure client，回傳模型輸出的純文字。"""
+    if azure_protocol(model) == "anthropic":
+        return call_azure_anthropic(
+            model=model,
+            system_instruction=system_instruction,
+            messages=messages,
+            images=images,
+        )
+    return call_azure_openai(
+        model=model,
+        system_instruction=system_instruction,
+        messages=messages,
+        temperature=temperature,
+        images=images,
+        json_mode=json_mode,
+    )
 
 
 DEFAULT_ISSUE_WORKSPACE_PROMPT = """
@@ -390,6 +551,7 @@ def run_arrange_llm(
     system_prompt: str,
     preferred_model: str,
     model_candidates: list[str],
+    images: list[ImageAsset] | None = None,
 ) -> tuple[str, str]:
     prompt = (system_prompt or "").strip() or DEFAULT_ISSUE_WORKSPACE_PROMPT
     return call_gemini_json_text(
@@ -399,6 +561,7 @@ def run_arrange_llm(
         preferred_model=preferred_model or None,
         model_candidates=model_candidates,
         default_models=ARRANGE_LLM_MODELS,
+        images=images,
     )
 
 
@@ -437,14 +600,10 @@ def call_gemini_json_text(
     preferred_model: str | None = None,
     model_candidates: list[str] | None = None,
     default_models: list[str] | None = None,
+    images: list[ImageAsset] | None = None,
 ) -> tuple[str, str]:
     config = load_config()
     gemini_key = config.get("gemini_api_key", "")
-    if not gemini_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Please set Gemini API Key in connection settings first.",
-        )
 
     payload = {
         "systemInstruction": {"parts": [{"text": prompt}]},
@@ -467,13 +626,55 @@ def call_gemini_json_text(
         default_models=default_models or DEFAULT_LLM_MODELS,
     )
     for model in models:
+        if is_azure_model(model):
+            try:
+                azure_system = (
+                    f"{prompt}\n\n"
+                    f'請只輸出單一有效的 JSON 物件，格式為 {{"{response_field}": "..."}}，'
+                    "不要 markdown、不要 code block、不要任何多餘文字。"
+                )
+                raw_response = call_azure_model(
+                    model,
+                    azure_system,
+                    [{"role": "user", "text": raw_text}],
+                    temperature=temperature,
+                    images=images if is_vision_model(model) else None,
+                )
+                parsed = extract_json_object(raw_response)
+                value = str(parsed.get(response_field, "")).strip()
+                if not value:
+                    raise ValueError(f"Missing field: {response_field}")
+                return value, model
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+
+        if not gemini_key:
+            last_error = "Gemini API Key 未設定。"
+            continue
+
         gemini_url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={gemini_key}"
         )
+        req_payload = payload
+        if images and is_vision_model(model):
+            req_payload = json.loads(json.dumps(payload))  # deep copy（純文字內容）
+            parts = req_payload["contents"][0]["parts"]
+            parts.append({"text": "上文中的【圖片#k】依序對應以下附上的圖片。"})
+            for img in images:
+                if getattr(img, "ok", False) and img.data:
+                    parts.append(
+                        {
+                            "inline_data": {
+                                "mime_type": img.media_type,
+                                "data": img.base64_data(),
+                            }
+                        }
+                    )
         for _attempt in range(3):
             try:
-                response = requests.post(gemini_url, json=payload, timeout=90)
+                response = requests.post(gemini_url, json=req_payload, timeout=90)
                 if response.status_code == 429:
                     continue
                 response.raise_for_status()
@@ -503,7 +704,227 @@ def call_gemini_json_text(
                 last_error = str(exc)
                 break
 
-    raise HTTPException(status_code=502, detail=f"Gemini API failed: {last_error}")
+    raise HTTPException(status_code=502, detail=f"LLM API failed: {last_error}")
+
+
+# ── 留言圖片：擷取、轉描述、與 raw_text 串接 ──────────────────────────
+
+ARRANGE_IMAGE_DIR = ARRANGE_EXPORT_DIR / "images"
+
+
+def _arrange_image_limits() -> tuple[int, int]:
+    try:
+        max_count = int(os.environ.get("ARRANGE_IMAGE_MAX_COUNT", "6"))
+    except ValueError:
+        max_count = 6
+    try:
+        max_bytes = int(os.environ.get("ARRANGE_IMAGE_MAX_BYTES", str(4 * 1024 * 1024)))
+    except ValueError:
+        max_bytes = 4 * 1024 * 1024
+    return max(0, max_count), max_bytes
+
+
+def _replace_image_ref(body: str, ref: str, marker: str) -> str:
+    esc = re.escape(ref)
+    body = re.sub(
+        r"!\[[^\]]*\]\(\s*<?" + esc + r">?(?:\s+\"[^\"]*\")?\s*\)", marker, body
+    )
+    body = re.sub(r"<img\b[^>]*?\bsrc\s*=\s*[\"']" + esc + r"[\"'][^>]*>", marker, body)
+    return body
+
+
+def caption_image(model: str, asset: ImageAsset) -> str:
+    """用視覺模型把單張圖片轉成繁中描述（純文字）。"""
+    system = (
+        "你是視覺助理。請用繁體中文簡述圖片內容（30-80字）；"
+        "若含文字、錯誤訊息或數值請逐字保留。只輸出描述本身，不要前言。"
+    )
+    user = "請描述這張圖片。"
+    if is_azure_model(model):
+        return call_azure_model(
+            model,
+            system,
+            [{"role": "user", "text": user}],
+            images=[asset],
+            json_mode=False,
+        ).strip()
+
+    # Gemini 多模態（純文字輸出）
+    gemini_key = load_config().get("gemini_api_key", "")
+    if not gemini_key:
+        return ""
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={gemini_key}"
+    )
+    payload = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [
+            {
+                "parts": [
+                    {"text": user},
+                    {
+                        "inline_data": {
+                            "mime_type": asset.media_type,
+                            "data": asset.base64_data(),
+                        }
+                    },
+                ]
+            }
+        ],
+    }
+    resp = requests.post(url, json=payload, timeout=60)
+    resp.raise_for_status()
+    candidates = resp.json().get("candidates", [])
+    if not candidates:
+        return ""
+    parts = candidates[0].get("content", {}).get("parts", [])
+    return "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
+
+
+def prepare_note_images(
+    client: Any, issue: dict[str, Any], discussions: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[ImageAsset]]:
+    """下載留言圖片、轉描述，回傳 (已把圖片 markdown 換成【圖片#k：描述】的 discussions, assets)。"""
+    web_url = issue.get("web_url")
+    project_web_base = project_web_base_from_issue_url(web_url)
+    base_url = getattr(client, "base_url", "") or getattr(client, "web_base_url", "")
+    provider_name = getattr(client, "provider_name", "")
+    project_ref = str(issue.get("source_ref") or "")
+
+    note_refs: list[tuple[dict[str, Any], list[str]]] = []
+    for disc in discussions:
+        for note in disc.get("notes", []):
+            if (note.get("body") or "").strip():
+                note_refs.append((note, extract_image_urls(note.get("body") or "")))
+
+    flat: list[tuple[int, str]] = []  # (note_position, ref)
+    resolved_urls: list[str] = []
+    for pos, (_note, refs) in enumerate(note_refs):
+        for ref in refs:
+            flat.append((pos, ref))
+            resolved_urls.append(
+                resolve_image_url(
+                    ref,
+                    provider_name=provider_name,
+                    base_url=base_url,
+                    project_ref=project_ref,
+                    project_web_base=project_web_base,
+                )
+            )
+
+    if not flat:
+        return discussions, []
+
+    max_count, max_bytes = _arrange_image_limits()
+    if max_count <= 0:
+        return discussions, []
+
+    issue_slug = f"{(issue.get('source_ref') or 'repo')}_{issue.get('iid')}".replace(
+        "/", "_"
+    )
+    dest_dir = ARRANGE_IMAGE_DIR / f"{issue_slug}_{utc_now().strftime('%Y%m%d_%H%M%S')}"
+    items = [(flat[i][0], resolved_urls[i]) for i in range(len(flat))]
+    assets = download_images(
+        client, items, dest_dir, max_count=max_count, max_bytes=max_bytes
+    )
+
+    # caption 成功的圖：依序嘗試多個視覺模型，第一個成功就用（Azure 較不受 Gemini 配額影響）
+    caption_candidates: list[str] = []
+    for name in [
+        os.environ.get("ARRANGE_VISION_MODEL", "").strip(),
+        *azure_model_names(),
+        *ARRANGE_LLM_MODELS,
+    ]:
+        if name and is_vision_model(name) and name not in caption_candidates:
+            caption_candidates.append(name)
+    for asset in assets:
+        if not asset.ok:
+            continue
+        for cap_model in caption_candidates:
+            try:
+                cap = caption_image(cap_model, asset)
+            except Exception:  # noqa: BLE001
+                continue
+            if cap:
+                asset.caption = cap
+                break
+
+    # 每則留言的 ref→marker
+    markers_per_pos: dict[int, dict[str, str]] = {}
+    for idx, (pos, ref) in enumerate(flat):
+        if idx < len(assets):
+            asset = assets[idx]
+            if asset.ok:
+                cap = f"：{asset.caption}" if asset.caption else ""
+                marker = f"【圖片#{asset.key}{cap}】"
+            else:
+                marker = f"【圖片#{asset.key}：下載失敗】"
+        else:
+            marker = "【圖片：超過數量上限，未處理】"
+        markers_per_pos.setdefault(pos, {})[ref] = marker
+
+    # 在 discussions 副本上替換
+    new_discussions = deepcopy(discussions)
+    new_notes: list[dict[str, Any]] = []
+    for disc in new_discussions:
+        for note in disc.get("notes", []):
+            if (note.get("body") or "").strip():
+                new_notes.append(note)
+    for pos, (_orig, _refs) in enumerate(note_refs):
+        if pos >= len(new_notes):
+            break
+        body = new_notes[pos].get("body") or ""
+        for ref, marker in markers_per_pos.get(pos, {}).items():
+            body = _replace_image_ref(body, ref, marker)
+        new_notes[pos]["body"] = body
+
+    return new_discussions, assets
+
+
+def load_arrange_images_for_url(url: str) -> list[ImageAsset]:
+    """供 /api/arrange/llm 兩步流程：依 issue url 重新載回最近一次下載的圖片。"""
+    try:
+        provider_name, base_url, project_ref, issue_iid = parse_issue_source_url(url)
+    except Exception:  # noqa: BLE001
+        return []
+    issue_slug = f"{project_ref}_{issue_iid}".replace("/", "_")
+    if not ARRANGE_IMAGE_DIR.exists():
+        return []
+    candidates = sorted(
+        (
+            d
+            for d in ARRANGE_IMAGE_DIR.iterdir()
+            if d.is_dir() and d.name.startswith(issue_slug + "_")
+        ),
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return []
+    latest = candidates[0]
+    assets: list[ImageAsset] = []
+    key = 0
+    for img_path in sorted(latest.glob("image_*")):
+        key += 1
+        ext = img_path.suffix.lower().lstrip(".")
+        media = f"image/{'jpeg' if ext == 'jpg' else ext}"
+        try:
+            data = img_path.read_bytes()
+        except OSError:
+            continue
+        assets.append(
+            ImageAsset(
+                key=key,
+                note_index=0,
+                url=str(img_path),
+                ok=True,
+                path=str(img_path),
+                media_type=media,
+                data=data,
+            )
+        )
+    return assets
 
 
 def read_issues() -> list[dict[str, Any]]:
@@ -546,7 +967,7 @@ def fetch_issues() -> list[dict[str, Any]]:
     meta["last_sync"] = utc_now().isoformat()
     save_meta(meta)
 
-    # Snapshot the freshly-synced active repo so Project Pulse schedules bound to
+    # Snapshot the freshly-synced active repo so AI Schedule tasks bound to
     # it can generate reports without reading the live global files.
     repo_registry.snapshot_active_repo(config)
     return issues
@@ -578,9 +999,22 @@ def run_scheduled_task(task_name: str) -> None:
 def _briefing_llm_caller():
     """Return the Gemini caller only when a key is configured, else None so the
     briefing service uses its deterministic rule-based path."""
-    if load_config().get("gemini_api_key"):
+    if load_config().get("gemini_api_key") or azure_model_names():
         return call_gemini_answer
     return None
+
+
+def project_pulse_llm_models(preferred_model: str = "") -> list[str]:
+    """AI Schedule prefers configured Azure models, then Gemini fallbacks."""
+    available = [*azure_model_names(), *CHAT_RAG_LLM_MODELS]
+    models: list[str] = []
+    preferred = preferred_model.strip()
+    if preferred and preferred not in available:
+        preferred = ""
+    for name in [preferred, *available]:
+        if name and name not in models:
+            models.append(name)
+    return models
 
 
 def _generate_briefing(date: str | None) -> dict[str, Any]:
@@ -621,7 +1055,7 @@ def run_briefing_send(trigger: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Project Pulse (專案脈搏) — multi-repo AI report schedules
+# AI Schedule — multi-repo AI report schedules
 # --------------------------------------------------------------------------- #
 def _pulse_repo_data(
     schedule: dict[str, Any],
@@ -741,29 +1175,28 @@ def execute_pulse_run(
 ) -> dict[str, Any]:
     """Core run shared by Preview / Send Now / scheduler.
 
-    (send only) sync bound repo → (optional) full reindex → generate report →
+    sync bound repo → (preview or optional) full reindex → generate report →
     (optional) send + history + run bookkeeping. ``progress_cb(phase, percent)``
     reports phases: syncing → indexing → generating → sending.
-
-    The bound-repo sync only runs when actually sending (or on a scheduled send),
-    so 產生結果/Preview stays fast by reading the existing snapshot.
     """
-    if do_send:
-        if progress_cb:
-            progress_cb("syncing", 0.0)
-        sync_bound_repo(schedule)
+    if progress_cb:
+        progress_cb("syncing", 0.0)
+    sync_bound_repo(schedule)
 
-    if schedule.get("rebuild_index_before_send"):
+    if run_type == "preview" or schedule.get("rebuild_index_before_send"):
         _rebuild_bound_repo_index(schedule, progress_cb)
 
     if progress_cb:
         progress_cb("generating", 100.0)
     issues, index = _pulse_repo_data(schedule)
+    pulse_models = project_pulse_llm_models(str(schedule.get("preferred_model") or ""))
     report = generate_pulse_report(
         schedule,
         issues=issues,
         index=index,
         llm_caller=_briefing_llm_caller(),
+        llm_preferred_model=pulse_models[0] if pulse_models else "",
+        llm_model_candidates=pulse_models,
     )
 
     outcome: dict[str, Any] = {"report": report, "sent": None}
@@ -815,7 +1248,7 @@ def run_pulse_send(schedule_id: str, run_type: str) -> dict[str, Any]:
     """Inline send. Shared by the fast Send Now path and the scheduler."""
     schedule = pulse_store.get_schedule(schedule_id)
     if schedule is None:
-        raise HTTPException(status_code=404, detail="找不到這筆報告任務。")
+        raise HTTPException(status_code=404, detail="找不到這筆 AI 排程。")
     outcome = execute_pulse_run(schedule, run_type, do_send=True)
     return {"sent": outcome["sent"], "report": outcome["report"]}
 
@@ -826,7 +1259,7 @@ def _run_pulse_job(job_id: str, schedule_id: str, run_type: str, do_send: bool) 
         pulse_jobs.set_job(job_id, {"status": "running", "phase": "syncing"})
         schedule = pulse_store.get_schedule(schedule_id)
         if schedule is None:
-            raise RuntimeError("找不到這筆報告任務。")
+            raise RuntimeError("找不到這筆 AI 排程。")
 
         def cb(phase: str, percent: float) -> None:
             pulse_jobs.set_job(
@@ -850,6 +1283,9 @@ def _run_pulse_job(job_id: str, schedule_id: str, run_type: str, do_send: bool) 
                     "issue_count": report["issue_count"],
                     "mode": report["mode"],
                     "message": report["message"],
+                    "generated_at": report.get("generated_at"),
+                    "requested_model": report.get("requested_model", ""),
+                    "model": report.get("model", ""),
                     "sent_ok": (sent["ok"] if sent else None),
                     "sent_error": (sent["error"] if sent else None),
                 },
@@ -1001,12 +1437,12 @@ def get_briefing_history() -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Project Pulse API
+# AI Schedule API
 # --------------------------------------------------------------------------- #
 def _require_schedule(schedule_id: str) -> dict[str, Any]:
     schedule = pulse_store.get_schedule(schedule_id)
     if schedule is None:
-        raise HTTPException(status_code=404, detail="找不到這筆報告任務。")
+        raise HTTPException(status_code=404, detail="找不到這筆 AI 排程。")
     return schedule
 
 
@@ -1054,7 +1490,7 @@ def update_pulse_schedule(
 ) -> dict[str, Any]:
     updated = pulse_store.update_schedule(schedule_id, payload.model_dump())
     if updated is None:
-        raise HTTPException(status_code=404, detail="找不到這筆報告任務。")
+        raise HTTPException(status_code=404, detail="找不到這筆 AI 排程。")
     pulse_store.update_run_state(
         schedule_id,
         last_run_at=updated.get("last_run_at") or "",
@@ -1068,7 +1504,7 @@ def update_pulse_schedule(
 @app.delete("/api/project-pulse/schedules/{schedule_id}")
 def remove_pulse_schedule(schedule_id: str) -> dict[str, Any]:
     if not pulse_store.delete_schedule(schedule_id):
-        raise HTTPException(status_code=404, detail="找不到這筆報告任務。")
+        raise HTTPException(status_code=404, detail="找不到這筆 AI 排程。")
     return {"ok": True}
 
 
@@ -1107,12 +1543,10 @@ def test_pulse_webhook(schedule_id: str) -> dict[str, Any]:
 
 @app.post("/api/project-pulse/schedules/{schedule_id}/preview")
 def preview_pulse_schedule(schedule_id: str) -> dict[str, Any]:
-    schedule = _require_schedule(schedule_id)
-    # A full reindex can take minutes, so run it as a background job and let the
-    # client poll for progress instead of holding the request open.
-    if schedule.get("rebuild_index_before_send"):
-        return start_pulse_job(schedule_id, "preview", do_send=False)
-    return _generate_pulse(schedule)
+    _require_schedule(schedule_id)
+    # Preview always syncs/rebuilds the schedule-bound repo, so keep it async and
+    # let the client show live phase progress instead of blocking the request.
+    return start_pulse_job(schedule_id, "preview", do_send=False)
 
 
 @app.post("/api/project-pulse/schedules/{schedule_id}/send-now")
@@ -1246,12 +1680,20 @@ def process_arrange_issue(payload: ArrangeProcessPayload) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Please provide an issue URL.")
 
     issue, discussions = load_issue_bundle_from_url(url)
+    assets: list[ImageAsset] = []
+    try:
+        provider_name, base_url, _ref, _iid = parse_issue_source_url(url)
+        img_client = ensure_provider(provider_name, base_url)
+        discussions, assets = prepare_note_images(img_client, issue, discussions)
+    except Exception:  # noqa: BLE001 — 圖片處理失敗不應中斷整理
+        assets = []
     raw_text = build_issue_raw_text(issue, discussions)
     result, model = run_arrange_llm(
         raw_text=raw_text,
         system_prompt=payload.system_prompt,
         preferred_model=payload.preferred_model,
         model_candidates=payload.model_candidates,
+        images=assets,
     )
     saved_raw_path = save_arrange_output(
         ARRANGE_EXPORT_DIR,
@@ -1283,6 +1725,12 @@ def scrape_arrange_issue(payload: ArrangeProcessPayload) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Please provide an issue URL.")
 
     issue, discussions = load_issue_bundle_from_url(url)
+    try:
+        provider_name, base_url, _ref, _iid = parse_issue_source_url(url)
+        img_client = ensure_provider(provider_name, base_url)
+        discussions, _assets = prepare_note_images(img_client, issue, discussions)
+    except Exception:  # noqa: BLE001 — 圖片處理失敗不應中斷 scrape
+        pass
     raw_text = build_issue_raw_text(issue, discussions)
     saved_raw_path = save_arrange_output(
         ARRANGE_EXPORT_DIR,
@@ -1305,11 +1753,15 @@ def llm_arrange_issue(payload: ArrangeLlmPayload) -> dict[str, Any]:
             status_code=400, detail="Please provide raw issue text first."
         )
 
+    images = (
+        load_arrange_images_for_url(payload.url.strip()) if payload.url.strip() else []
+    )
     result, model = run_arrange_llm(
         raw_text=raw_text,
         system_prompt=payload.system_prompt,
         preferred_model=payload.preferred_model,
         model_candidates=payload.model_candidates,
+        images=images,
     )
     saved_result_path = None
     if payload.url.strip():
@@ -1523,8 +1975,6 @@ def summarize_discussions(iid: int) -> dict[str, str]:
 
     config = load_config()
     gemini_key = config.get("gemini_api_key", "")
-    if not gemini_key:
-        raise HTTPException(status_code=400, detail="請先在設定中填入 Gemini API Key。")
     try:
         client, project_ref = active_provider_context(config)
         discussions = client.fetch_issue_discussions(project_ref, iid)
@@ -1563,8 +2013,37 @@ def summarize_discussions(iid: int) -> dict[str, str]:
         f"{conversation}\n"
     )
 
+    summary_system = (
+        "你是專業的 Issue 專案管理助理。"
+        "請使用繁體中文。"
+        "只輸出有效 JSON。"
+        "不要前言、不要分析過程、不要 markdown、不要 code block。"
+        '輸出格式必須為 {"summary":"..."}。'
+    )
+
     last_error = ""
     for model in DISCUSSION_SUMMARY_LLM_MODELS:
+        if is_azure_model(model):
+            try:
+                raw_response = call_azure_model(
+                    model,
+                    summary_system,
+                    [{"role": "user", "text": prompt}],
+                    temperature=0.1,
+                )
+                parsed = extract_json_object(raw_response)
+                summary = parsed.get("summary", "").strip()
+                if not summary:
+                    raise ValueError("Missing summary field")
+                return {"summary": summary}
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+
+        if not gemini_key:
+            last_error = "Gemini API Key 未設定。"
+            continue
+
         gemini_url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={gemini_key}"
@@ -1717,8 +2196,6 @@ def call_gemini_answer(
 ) -> tuple[str, str]:
     config = load_config()
     gemini_key = config.get("gemini_api_key", "")
-    if not gemini_key:
-        raise HTTPException(status_code=400, detail="請先在設定中填入 Gemini API Key。")
 
     models = build_model_chain(
         preferred_model=preferred_model,
@@ -1728,6 +2205,31 @@ def call_gemini_answer(
 
     last_error = ""
     for model in models:
+        if is_azure_model(model):
+            try:
+                azure_system = (
+                    f"{system_instruction}\n\n"
+                    '請只輸出單一有效的 JSON 物件，格式為 {"answer": "..."}，'
+                    "不要 markdown、不要 code block、不要任何多餘文字。"
+                )
+                raw_response = call_azure_model(
+                    model,
+                    azure_system,
+                    gemini_contents_to_messages(contents),
+                )
+                result = extract_json_object(raw_response)
+                answer = str(result.get("answer", "")).strip()
+                if not answer:
+                    raise ValueError("Missing answer field")
+                return answer, model
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+
+        if not gemini_key:
+            last_error = "Gemini API Key 未設定。"
+            continue
+
         gemini_url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={gemini_key}"
@@ -1829,23 +2331,25 @@ def chat_with_issues(payload: ChatPayload) -> dict[str, Any]:
     if payload.use_rag:
         rag_results = search_rag_index(payload.question, top_k=top_k)
 
-        if rag_results and resolved_mode == "context-trace":
-            # Locate the most relevant issues, then expand their full context.
-            issue_scores: dict[int, float] = {}
-            for item in rag_results:
-                iid = item.get("issue_iid")
-                if iid is None:
-                    continue
-                issue_scores[iid] = issue_scores.get(iid, 0.0) + float(
-                    item.get("score") or 0
+        if resolved_mode == "context-trace":
+            index = load_rag_index()
+            if not index.get("chunks"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="脈絡追蹤需要先建立留言索引，請先執行知識索引重建。",
                 )
-            top_issue_iids = [
-                iid
-                for iid, _ in sorted(
-                    issue_scores.items(), key=lambda kv: kv[1], reverse=True
-                )[:3]
-            ]
-            context_chunks = collect_issue_context(top_issue_iids)[:24]
+            top_issue_iids = select_context_trace_issue_iids(
+                payload.question,
+                rag_results,
+                issues,
+                index,
+            )
+            context_chunks = collect_issue_context(top_issue_iids, index=index)[:24]
+            if not context_chunks:
+                raise HTTPException(
+                    status_code=404,
+                    detail="找不到可用的脈絡追蹤內容，請重建知識索引後再試一次。",
+                )
 
             system_instruction = (
                 "你是一位資深技術 PM，負責把 issue 的來龍去脈講清楚。\n"

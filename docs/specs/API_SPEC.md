@@ -170,6 +170,19 @@ GitLab 回傳 linked issues；GitHub 回傳明確 dependencies、parent 與 sub-
 
 支援 GitLab/GitHub 單一 Issue URL 與 repository Issues filter URL。
 
+### 留言圖片（Hybrid 多模態）
+
+`scrape` / `process` 會擷取**留言中的圖片**(描述不處理),用 provider 既有認證下載並暫存於
+`data/arrange_exports/images/<repo>_<iid>_<時間>/`,並用視覺模型把每張圖轉成繁中描述,
+內嵌進 raw_text 成 `【圖片#k：描述】`(下載失敗為 `【圖片#k：下載失敗】`)。
+
+LLM 整理時:當下模型**支援視覺**(由 `is_vision_model` 判定:Gemini 系列、Azure 模型設定
+未標 `novision` 者)→ 額外把原圖一併附上(Gemini `inline_data` / OpenAI `image_url` /
+Anthropic image block);純文字模型則僅依內嵌描述。
+
+`/api/arrange/llm` 兩步流程會依 `url` 重載最近一次下載的圖片。相關上限見 `backend/.env.example`
+的 `ARRANGE_IMAGE_MAX_COUNT` / `ARRANGE_IMAGE_MAX_BYTES` / `ARRANGE_VISION_MODEL`。
+
 ### `POST /api/arrange/preview`
 
 ```json
@@ -300,6 +313,160 @@ History 最多使用最近 10 筆；Chat RAG `top_k` 上限 10。回傳：
 ```
 
 若無 RAG 結果，`mode="issue_list"` 且 `sources=[]`。
+
+### LLM 模型與 provider 路由
+
+arrange / chat / summary 端點共用 `preferred_model` / `model_candidates`，後端依**模型名稱**自動路由：
+
+- Gemini 系列 → Google Gemini API（金鑰 `gemini_api_key`）。
+- Azure 模型 → 由 `backend/.env` 設定（見 `backend/.env.example`），機密走環境變數、不進 `config.json`：
+  - `protocol=openai` → `{ENDPOINT}/openai/deployments/{deploy}/chat/completions`（`api-key` header）
+  - `protocol=anthropic` → `{ENDPOINT}/anthropic/v1/messages`（`x-api-key` + `anthropic-version`，不送 temperature）
+
+前端模型清單（`legacy-app.ts` 的 `AZURE_LLM_MODEL_LIST`）的 Azure 名稱須與 `.env` 的
+`AZURE_LLM_MODEL_*` 第一欄一致。
+
+## AI 排程
+
+AI 排程使用既有 `/api/project-pulse/*` route，為了相容舊資料與前端程式命名，API path 暫不改名。畫面與使用者文案顯示為「AI 排程」。
+
+### `GET /api/project-pulse/schedules`
+
+回傳 AI 排程清單與摘要：
+
+```json
+{
+  "items": [
+    {
+      "id": "schedule_xxx",
+      "enabled": true,
+      "repo_id": "gitlab:group/project",
+      "repo_name": "frontend",
+      "name": "frontend Daily Issue Briefing",
+      "report_type": "daily-briefing",
+      "preferred_model": "gpt-5.4",
+      "send_time": "18:30",
+      "timezone": "Asia/Taipei",
+      "updated_issue_window": "today",
+      "issue_state": "all",
+      "rebuild_index_before_send": false,
+      "has_teams_webhook_url": true,
+      "teams_webhook_url_masked": "https://default301f0000...sig=********",
+      "last_run_at": "2026-06-09T10:00:00Z",
+      "last_run_status": "success",
+      "next_run_at": "2026-06-10T10:30:00Z"
+    }
+  ],
+  "summary": {
+    "enabled_count": 1,
+    "next_run_at": "2026-06-10T10:30:00Z",
+    "recent_failures": 0,
+    "monitored_repos": 1
+  }
+}
+```
+
+Webhook URL 是 secret，只回傳 `has_teams_webhook_url` 與 masked preview。
+
+### `POST /api/project-pulse/schedules`
+
+建立 AI 排程。`PUT /api/project-pulse/schedules/{schedule_id}` 使用相同 payload 更新。
+
+```json
+{
+  "enabled": true,
+  "repo_id": "gitlab:group/project",
+  "repo_name": "frontend",
+  "provider": "gitlab",
+  "name": "frontend Daily Issue Briefing",
+  "report_type": "daily-briefing",
+  "preferred_model": "gpt-5.4",
+  "custom_instruction": "請整理選定範圍內有變動的 Issue...",
+  "send_time": "18:30",
+  "timezone": "Asia/Taipei",
+  "workdays": [1, 2, 3, 4, 5],
+  "channel_type": "teams-webhook",
+  "teams_webhook_url": "https://...",
+  "updated_issue_window": "today",
+  "issue_state": "all",
+  "labels": [],
+  "assignees": [],
+  "include_risks": true,
+  "include_next_steps": true,
+  "include_source_links": true,
+  "rebuild_index_before_send": false
+}
+```
+
+`preferred_model` 優先使用使用者選擇的自然語言模型。後端候選順序為：排程指定模型、`backend/.env` 的 Azure 模型、Gemini fallback。實際使用模型會寫入 preview/job result 的 `model`。
+
+### `POST /api/project-pulse/schedules/{schedule_id}/preview`
+
+啟動非阻塞 preview job：
+
+```json
+{
+  "async": true,
+  "job_id": "pulsejob_xxx",
+  "status": "queued"
+}
+```
+
+Preview 永遠走背景 job，並依照排程綁定的 repo 執行資料流程，不使用目前 active repo：
+
+1. `syncing`：同步該排程 repo 的最新 Issue。
+2. `indexing`：重建該 repo 的留言/RAG index。
+3. `generating`：以選定模型產生結果。
+
+前端關閉 preview modal 時會 abort polling 並忽略後續結果；後端 job 仍會完成。
+
+### `GET /api/project-pulse/jobs/{job_id}`
+
+查詢 background job 狀態：
+
+```json
+{
+  "job_id": "pulsejob_xxx",
+  "schedule_id": "schedule_xxx",
+  "status": "completed",
+  "phase": "generating",
+  "progress": 100,
+  "result": {
+    "ok": true,
+    "title": "frontend Daily Issue Briefing",
+    "issue_count": 4,
+    "mode": "indexed",
+    "message": "...",
+    "generated_at": "2026-06-09T10:00:00Z",
+    "requested_model": "gpt-5.4",
+    "model": "gpt-5.4",
+    "sent_ok": null
+  },
+  "error": null
+}
+```
+
+`title` 使用排程名稱。`message` 結尾會附上本次整理使用模型；若模型 fallback，會標示原選模型與實際模型。若 LLM 失敗改用規則式輸出，會標示未使用 LLM。
+
+### `POST /api/project-pulse/schedules/{schedule_id}/send-now`
+
+立即發送 AI 排程到 Teams。若 `rebuild_index_before_send=true`，回傳 background job；否則同步產生並發送。
+
+### Teams 訊息格式
+
+`send_teams_webhook` 送出前會將裸 URL 轉為 Markdown link，讓 Teams 顯示文字超連結：
+
+```text
+來源：https://example.com/issues/1
+```
+
+會送出為：
+
+```text
+來源：[來源連結](https://example.com/issues/1)
+```
+
+已是 Markdown link 的內容不會重複包裝。
 
 ## Analytics 與 Reports
 

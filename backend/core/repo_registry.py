@@ -2,7 +2,7 @@
 
 The rest of the app works against a single *active* repo: one global
 ``issues_cache.json`` and one ``rag_index.json``, wiped whenever the connection
-changes. Project Pulse, however, needs to generate reports for several repos
+changes. AI Schedule, however, needs to generate reports for several repos
 without their data mixing (Case 7). Rather than refactor the RAG build to be
 repo-aware, we keep the active-repo flow untouched and *snapshot* its cache +
 index into a per-repo folder keyed by a stable ``repo_id``. Report generation

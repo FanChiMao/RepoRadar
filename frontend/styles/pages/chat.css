@@ -476,6 +476,9 @@ html[data-theme='light'] .chat-rag-state.fallback .chat-rag-state__card {
 .chat-msg-content li {
   margin: 2px 0;
 }
+.chat-msg-content li.chat-subitem {
+  margin-left: 12px;
+}
 .chat-msg-content code {
   background: rgba(255, 255, 255, 0.08);
   padding: 1px 5px;
@@ -523,6 +526,12 @@ html[data-theme='light'] .chat-rag-state.fallback .chat-rag-state__card {
   color: var(--text-muted);
   margin-top: 4px;
   padding: 0 4px;
+}
+
+.chat-msg-meta.chat-msg-fallback {
+  color: var(--amber-400, #fbbf24);
+  font-weight: 600;
+  cursor: help;
 }
 
 .chat-msg-sources .chat-msg-meta {

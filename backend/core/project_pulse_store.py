@@ -1,4 +1,4 @@
-"""Project Pulse (專案脈搏) — storage for AI report schedules + run history.
+"""AI Schedule — storage for AI report schedules + run history.
 
 Each schedule is a cross-repo report task: it binds to one repo, owns its own
 Teams webhook, send time / workdays, report type and custom "整理指令".
@@ -29,14 +29,16 @@ HISTORY_PATH = data_dir() / "ai_report_history.json"
 MAX_HISTORY = 100
 
 REPORT_TYPES = ("daily-briefing", "custom-report")
-# Reserved for future report types — accepted but treated like custom-report.
-FUTURE_REPORT_TYPES = ("risk-report", "drift-check", "handoff-report")
 ISSUE_WINDOWS = ("today", "since-last-run", "last-7-days")
 ISSUE_STATES = ("open", "closed", "all")
 
 # Default 整理指令 per report type, brought into the textarea on type change.
-DEFAULT_DAILY_INSTRUCTION = (
+LEGACY_DAILY_INSTRUCTION = (
     "請整理今日有更新的 Issue，聚焦今日進展、目前狀態、風險與阻塞、建議下一步，"
+    "並附上來源連結。請使用繁體中文。不要重述完整歷史，必要時只補一句背景。"
+)
+DEFAULT_DAILY_INSTRUCTION = (
+    "請整理選定範圍內有變動的 Issue，聚焦本期變動、目前狀態、風險與阻塞、建議下一步，"
     "並附上來源連結。請使用繁體中文。不要重述完整歷史，必要時只補一句背景。"
 )
 DEFAULT_CUSTOM_INSTRUCTION = (
@@ -66,6 +68,7 @@ class AiReportSchedule(BaseModel):
     name: str = "每日 Issue 摘要"
     report_type: str = "daily-briefing"  # daily-briefing / custom-report
     custom_instruction: str = ""
+    preferred_model: str = ""
 
     send_time: str = "18:30"
     timezone: str = "Asia/Taipei"
@@ -120,9 +123,7 @@ class AiReportRunHistory(BaseModel):
 # --------------------------------------------------------------------------- #
 def _normalize_report_type(value: Any) -> str:
     text = str(value or "").strip().lower()
-    if text in REPORT_TYPES or text in FUTURE_REPORT_TYPES:
-        return text
-    return "daily-briefing"
+    return text if text in REPORT_TYPES else "daily-briefing"
 
 
 def _normalize_window(value: Any) -> str:
@@ -172,6 +173,12 @@ def normalize_schedule(raw: Any) -> dict[str, Any]:
     data["provider"] = str(source.get("provider") or "").strip()
     data["name"] = str(source.get("name") or data["name"]).strip() or "每日 Issue 摘要"
     data["custom_instruction"] = str(source.get("custom_instruction") or "")
+    if (
+        data["report_type"] == "daily-briefing"
+        and data["custom_instruction"] == LEGACY_DAILY_INSTRUCTION
+    ):
+        data["custom_instruction"] = DEFAULT_DAILY_INSTRUCTION
+    data["preferred_model"] = str(source.get("preferred_model") or "").strip()
     data["teams_webhook_url"] = str(source.get("teams_webhook_url") or "").strip()
     data["rebuild_index_before_send"] = bool(
         source.get("rebuild_index_before_send", data["rebuild_index_before_send"])

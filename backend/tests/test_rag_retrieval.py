@@ -179,5 +179,43 @@ class CollectIssueContextTests(unittest.TestCase):
         self.assertEqual(rag_service.collect_issue_context([]), [])
 
 
+class ContextTraceCandidateTests(unittest.TestCase):
+    def test_falls_back_to_risk_issue_candidates_when_search_misses(self) -> None:
+        index = {
+            "chunks": [
+                _chunk("i1-over", 1, ["alpha"], source_type="overview"),
+                _chunk("i2-over", 2, ["beta"], source_type="overview"),
+            ]
+        }
+        issues = [
+            {
+                "iid": 1,
+                "title": "Low priority cleanup",
+                "state": "opened",
+                "labels": [],
+                "updated_at": "2026-06-08T00:00:00Z",
+                "due_date": "2026-07-30",
+            },
+            {
+                "iid": 2,
+                "title": "Release blocker",
+                "state": "opened",
+                "labels": [],
+                "updated_at": "2026-04-01T00:00:00Z",
+                "due_date": "2026-06-12",
+            },
+        ]
+
+        picked = api_app.select_context_trace_issue_iids(
+            "本週最主要的風險是什麼",
+            [],
+            issues,
+            index,
+            top_n=1,
+        )
+
+        self.assertEqual([2], picked)
+
+
 if __name__ == "__main__":
     unittest.main()

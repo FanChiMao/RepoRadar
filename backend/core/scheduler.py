@@ -79,7 +79,7 @@ class TrackerScheduler:
             self._briefing_runner()
 
     def _check_pulse(self) -> None:
-        """Multi-schedule Project Pulse trigger. Each schedule is evaluated in
+        """Multi-schedule AI Schedule trigger. Each schedule is evaluated in
         its own timezone; dedupe is keyed per schedule + local date so the same
         schedule auto-sends at most once a day (Send Now bypasses this)."""
         if not (self._pulse_provider and self._pulse_runner):

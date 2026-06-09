@@ -944,7 +944,7 @@ def collect_issue_context(
     → pipeline), then time so the LLM sees a coherent front-to-back narrative.
 
     Pass ``index`` to read from a specific (e.g. per-repo) index snapshot instead
-    of the global one — this is how Project Pulse keeps multi-repo context from
+    of the global one — this is how AI Schedule keeps multi-repo context from
     mixing.
     """
     wanted = {int(iid) for iid in issue_iids}

@@ -83,18 +83,31 @@ const MAX_SIDEBAR_WIDTH = 360;
 const LOCAL_CONFIG_CACHE_KEY = 'repo-radar:config-cache';
 const UI_PREFERENCES_KEY = 'repo-radar:ui-preferences';
 const ARRANGE_PROMPT_TEMPLATES_KEY = 'repo-radar:arrange-prompt-templates';
+// Azure 模型（顯示名稱須與 backend/.env 的 AZURE_LLM_MODEL_* 第一欄一致）
+const AZURE_LLM_MODEL_LIST = ['gpt-5.4', 'Kimi-K2.5', 'claude-opus'];
 const DEFAULT_GEMINI_MODEL_LIST = [
   'gemini-2.5-pro',
   'gemini-3.5-flash',
   'gemini-2.5-flash',
   'gemma-4-31b-it',
   'gemma-4-26b-a4b-it',
+  ...AZURE_LLM_MODEL_LIST,
 ];
-const ARRANGE_GEMINI_MODEL_LIST = ['gemini-2.5-pro', 'gemini-3.5-flash'];
-const CHAT_RAG_GEMINI_MODEL_LIST = ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemma-4-26b-a4b-it'];
+const ARRANGE_GEMINI_MODEL_LIST = ['gemini-2.5-pro', 'gemini-3.5-flash', ...AZURE_LLM_MODEL_LIST];
+const CHAT_RAG_GEMINI_MODEL_LIST = [
+  'gemini-3.5-flash',
+  'gemini-2.5-pro',
+  'gemma-4-26b-a4b-it',
+  ...AZURE_LLM_MODEL_LIST,
+];
+const PULSE_LLM_MODEL_LIST = [
+  ...AZURE_LLM_MODEL_LIST,
+  ...CHAT_RAG_GEMINI_MODEL_LIST.filter((model) => !AZURE_LLM_MODEL_LIST.includes(model)),
+];
 const DISCUSSION_SUMMARY_GEMINI_MODEL_LIST = ['gemini-2.5-flash', 'gemma-4-31b-it'];
 const DEFAULT_GEMINI_MODEL = ARRANGE_GEMINI_MODEL_LIST[0];
 const DEFAULT_CHAT_RAG_MODEL = CHAT_RAG_GEMINI_MODEL_LIST[0];
+const DEFAULT_PULSE_LLM_MODEL = PULSE_LLM_MODEL_LIST[0];
 const RETRIEVAL_MODE_LIST: RetrievalMode[] = ['auto', 'fast-rag', 'context-trace'];
 const DEFAULT_RETRIEVAL_MODE: RetrievalMode = 'auto';
 const RETRIEVAL_MODE_LABELS: Record<ResolvedRetrievalMode | 'auto', string> = {
@@ -5129,6 +5142,7 @@ interface PulseSchedule {
   name: string;
   report_type: string;
   custom_instruction: string;
+  preferred_model: string;
   send_time: string;
   timezone: string;
   workdays: number[];
@@ -5156,6 +5170,9 @@ interface PulseJobResult {
   issue_count: number;
   mode: string;
   message: string;
+  generated_at?: string | null;
+  requested_model?: string | null;
+  model?: string | null;
   sent_ok: boolean | null;
   sent_error: string | null;
 }
@@ -5203,6 +5220,9 @@ interface PulseReport {
   message: string;
   index_built_at: string | null;
   mode: string;
+  generated_at?: string | null;
+  requested_model?: string | null;
+  model?: string | null;
 }
 
 interface PulseHistoryItem {
@@ -5220,27 +5240,74 @@ interface PulseHistoryItem {
 }
 
 // Must match backend project_pulse_store defaults verbatim.
+const PULSE_LEGACY_DAILY_INSTRUCTION = `請整理「選定範圍內今天有任何變動的 Issue」。
+
+請只列出今天有變動的 Issue，變動類型包含但不限於：
+- 新增留言 / 回覆
+- Description / 標題調整
+- Issue 被關閉、重開，或狀態變更
+- Label / Milestone / Assignee / Priority 變更
+- Due date / Estimate / Weight 等欄位變更
+- 其他 metadata 或 issue 內容更新
+
+請使用繁體中文輸出，並避免重述完整歷史。
+若需要背景，最多補一句即可。
+
+每個 Issue 請整理以下內容：
+
+1. Issue 標題與來源連結
+2. 今日變動摘要
+   - 說明今天實際變動了什麼
+   - 若有多種變動，請分點列出
+3. 目前狀態
+   - Open / Closed / Reopened / In Progress 等
+   - 若能判斷目前卡在哪裡，也請簡述
+4. 風險與阻塞
+   - 是否有未解問題、等待他人回覆、需求不明、技術風險或交付風險
+   - 若沒有明顯風險，請寫「目前未見明顯阻塞」
+5. 建議下一步
+   - 給出具體可執行的下一步，而不是籠統建議
+
+最後請附上一段「今日總結」，包含：
+- 今天變動的 Issue 數量
+- 已關閉 / 仍開啟 / 有阻塞的數量
+- 最需要優先追蹤的 1～3 個 Issue
+
+請不要列出今天沒有變動的 Issue。`;
+
 const PULSE_DEFAULT_INSTRUCTIONS: Record<string, string> = {
-  'daily-briefing':
-    '請整理今日有更新的 Issue，聚焦今日進展、目前狀態、風險與阻塞、建議下一步，並附上來源連結。請使用繁體中文。不要重述完整歷史，必要時只補一句背景。',
+  'daily-briefing': PULSE_LEGACY_DAILY_INSTRUCTION,
+
   'custom-report':
     '請根據選定時間範圍內的 Issue 更新，產生一份清楚、可行動的專案報告。請依照重要性整理重點，列出需要追蹤的事項、風險與建議下一步。請使用繁體中文，並附上來源連結。',
 };
 
 let pulseSchedules: PulseSchedule[] = [];
 let pulseRepos: PulseRepo[] = [];
+let pulsePreviewAbort: AbortController | null = null;
+let pulsePreviewRunId = 0;
+
+const PULSE_GENERATION_STAGES = [
+  { phase: 'syncing', label: '同步最新資訊' },
+  { phase: 'indexing', label: '同步留言' },
+  { phase: 'generating', label: '產生結果' },
+];
 
 function pulseDefaultInstruction(reportType: string): string {
   return PULSE_DEFAULT_INSTRUCTIONS[reportType] || PULSE_DEFAULT_INSTRUCTIONS['custom-report'];
+}
+
+function normalizePulseInstruction(instruction: string, reportType: string): string {
+  if (reportType === 'daily-briefing' && instruction === PULSE_LEGACY_DAILY_INSTRUCTION) {
+    return PULSE_DEFAULT_INSTRUCTIONS['daily-briefing'];
+  }
+  return instruction;
 }
 
 function pulseReportTypeLabel(type: string): string {
   const labels: Record<string, string> = {
     'daily-briefing': '每日簡報',
     'custom-report': '自訂報告',
-    'risk-report': '風險報告',
-    'drift-check': '偏移檢查',
-    'handoff-report': '交接報告',
   };
   return labels[type] || type;
 }
@@ -5282,8 +5349,8 @@ function pulseOverlay(id: string, open: boolean): void {
 function pulsePhaseLabel(job: PulseJob): string {
   const labels: Record<string, string> = {
     queued: '排隊中…',
-    syncing: '同步資料中…',
-    indexing: `重建索引中… ${Math.round(job.progress)}%`,
+    syncing: '同步最新資訊…',
+    indexing: `同步留言… ${Math.round(job.progress)}%`,
     generating: '產生報告中…',
     sending: '發送中…',
     completed: '完成',
@@ -5292,13 +5359,60 @@ function pulsePhaseLabel(job: PulseJob): string {
   return labels[job.phase] || '處理中…';
 }
 
+function pulseGenerationStageIndex(phase: string): number {
+  if (phase === 'queued' || phase === 'syncing') return 0;
+  if (phase === 'indexing') return 1;
+  if (phase === 'generating' || phase === 'sending' || phase === 'completed') return 2;
+  return 0;
+}
+
+function renderPulseStageLoader(phase: string, progress = 0): string {
+  const activeIndex = pulseGenerationStageIndex(phase);
+  const activeStage = PULSE_GENERATION_STAGES[activeIndex] || PULSE_GENERATION_STAGES[0];
+  const progressText = phase === 'indexing' ? ` ${Math.round(progress)}%` : '';
+  const blocks = PULSE_GENERATION_STAGES.map((stage, index) => {
+    const state = index < activeIndex ? 'done' : index === activeIndex ? 'active' : 'pending';
+    const label = stage.phase === activeStage.phase ? `${stage.label}${progressText}` : stage.label;
+    return `<span class="pulse-stage-block is-${state}"><span class="pulse-stage-label">${escapeHtml(label)}</span></span>`;
+  }).join('<span class="pulse-stage-arrow">→</span>');
+  const currentLabel =
+    phase === 'queued'
+      ? '排隊中'
+      : `${activeStage.label}${progressText ? ` ${progressText.trim()}` : ''}`;
+  return `
+    <div class="pulse-stage-loader" role="status" aria-live="polite" aria-label="${escapeHtml(currentLabel)}">
+      ${blocks}
+    </div>`;
+}
+
+function pulseAbortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        window.clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      },
+      { once: true },
+    );
+  });
+}
+
 // Poll a background pulse job until it finishes; onTick fires every poll.
-async function pollPulseJob(jobId: string, onTick: (job: PulseJob) => void): Promise<PulseJob> {
+async function pollPulseJob(
+  jobId: string,
+  onTick: (job: PulseJob) => void,
+  signal?: AbortSignal,
+): Promise<PulseJob> {
   for (;;) {
-    const job = await api<PulseJob>(`/api/project-pulse/jobs/${jobId}`);
+    const job = await api<PulseJob>(`/api/project-pulse/jobs/${jobId}`, 'GET', undefined, {
+      signal,
+    });
     onTick(job);
     if (job.status === 'completed' || job.status === 'failed') return job;
-    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    await pulseAbortableDelay(1200, signal);
   }
 }
 
@@ -5343,17 +5457,52 @@ function setPulsePreviewMeta(html: string): void {
   if (meta) meta.innerHTML = html;
 }
 
-function openPulsePreviewLoading(text: string): void {
+function setPulsePreviewLoadingPhase(phase: string, progress = 0): void {
+  setPulsePreviewMeta(renderPulseStageLoader(phase, progress));
+}
+
+function openPulsePreviewLoading(phase: string): void {
   const output = getById<HTMLTextAreaElement>('pulse-preview-output');
   if (output) output.value = '';
-  setPulsePreviewMeta(`<span class="pulse-spinner"></span> ${escapeHtml(text)}`);
+  setPulsePreviewLoadingPhase(phase);
   pulseOverlay('pulse-preview-overlay', true);
+}
+
+function closePulsePreview(): void {
+  pulsePreviewRunId += 1;
+  pulsePreviewAbort?.abort();
+  pulsePreviewAbort = null;
+  pulseOverlay('pulse-preview-overlay', false);
 }
 
 function setPulsePreviewError(message: string): void {
   setPulsePreviewMeta('');
   const output = getById<HTMLTextAreaElement>('pulse-preview-output');
   if (output) output.value = message;
+}
+
+function renderPulsePreviewMeta(report: PulseReport): string {
+  const generatedAt = report.generated_at || report.date;
+  const timeLabel = generatedAt ? escapeHtml(fmtDate(generatedAt)) : '';
+  const requestedModel = (report.requested_model || '').trim();
+  const usedModel = (report.model || '').trim();
+  const modelLabel = usedModel || (requestedModel ? '規則產生' : '');
+  const isFallback = Boolean(requestedModel && usedModel && requestedModel !== usedModel);
+  const metaParts = [
+    timeLabel,
+    isFallback
+      ? `已自動切換：${escapeHtml(requestedModel)} → ${escapeHtml(usedModel)}`
+      : escapeHtml(modelLabel),
+  ].filter(Boolean);
+  const detailParts = [
+    `${escapeHtml(String(report.issue_count))} 件`,
+    `模式：${escapeHtml(report.mode)}`,
+  ];
+  const metaClass = isFallback ? 'pulse-preview-meta pulse-preview-fallback' : 'pulse-preview-meta';
+  const metaTitle = isFallback ? ' title="原選模型過載或限流，已自動改用可用模型"' : '';
+  return `
+    <span class="${metaClass}"${metaTitle}>${metaParts.join(' · ')}</span>
+    <span class="pulse-preview-detail">${detailParts.join(' · ')}</span>`;
 }
 
 async function loadPulse(): Promise<void> {
@@ -5385,8 +5534,8 @@ function renderPulseTable(items: PulseSchedule[]): void {
   tbody.innerHTML = items
     .map((s) => {
       const statusDot = s.enabled ? 'on' : 'off';
-      const statusText = s.enabled ? '啟用中' : '已暫停';
-      const toggleLabel = s.enabled ? '暫停' : '啟用';
+      const statusText = s.enabled ? '啟用中' : '已停用';
+      const toggleLabel = s.enabled ? '停用' : '啟用';
       return `
         <tr data-pulse-id="${escapeHtml(s.id)}">
           <td><span class="pulse-status"><span class="dot ${statusDot}"></span>${statusText}</span></td>
@@ -5403,7 +5552,6 @@ function renderPulseTable(items: PulseSchedule[]): void {
               <button class="ghost-btn" data-pulse-action="edit">編輯</button>
               <button class="ghost-btn" data-pulse-action="preview">結果</button>
               <button class="ghost-btn" data-pulse-action="send">發送</button>
-              <button class="ghost-btn" data-pulse-action="test">測試</button>
               <button class="ghost-btn" data-pulse-action="toggle">${toggleLabel}</button>
               <button class="ghost-btn danger" data-pulse-action="delete">刪除</button>
             </div>
@@ -5473,14 +5621,22 @@ function fillPulseForm(schedule: PulseSchedule | null): void {
   setVal('pulse-form-timezone', tz);
   setVal('pulse-form-window', schedule?.updated_issue_window || 'today');
   setVal('pulse-form-state', schedule?.issue_state || 'all');
+  syncGeminiModelSelect(
+    getById<HTMLSelectElement>('pulse-form-model'),
+    schedule?.preferred_model || DEFAULT_PULSE_LLM_MODEL,
+    PULSE_LLM_MODEL_LIST,
+  );
   setChecked('pulse-form-risks', schedule ? schedule.include_risks : true);
   setChecked('pulse-form-next', schedule ? schedule.include_next_steps : true);
   setChecked('pulse-form-links', schedule ? schedule.include_source_links : true);
   setChecked('pulse-form-rebuild', schedule ? schedule.rebuild_index_before_send : false);
   setVal(
     'pulse-form-instruction',
-    schedule?.custom_instruction ||
-      pulseDefaultInstruction(schedule?.report_type || 'daily-briefing'),
+    normalizePulseInstruction(
+      schedule?.custom_instruction ||
+        pulseDefaultInstruction(schedule?.report_type || 'daily-briefing'),
+      schedule?.report_type || 'daily-briefing',
+    ),
   );
 
   const workdays = new Set(schedule?.workdays || [1, 2, 3, 4, 5]);
@@ -5538,6 +5694,8 @@ function readPulseForm(): Record<string, unknown> {
     name: getById<HTMLInputElement>('pulse-form-name')?.value.trim() || '每日 Issue 摘要',
     report_type: getById<HTMLSelectElement>('pulse-form-type')?.value || 'daily-briefing',
     custom_instruction: getById<HTMLTextAreaElement>('pulse-form-instruction')?.value || '',
+    preferred_model:
+      getById<HTMLSelectElement>('pulse-form-model')?.value || DEFAULT_PULSE_LLM_MODEL,
     send_time: getById<HTMLInputElement>('pulse-form-send-time')?.value || '18:30',
     timezone: getById<HTMLSelectElement>('pulse-form-timezone')?.value.trim() || 'Asia/Taipei',
     workdays,
@@ -5584,7 +5742,7 @@ function restorePulseDefaultInstruction(): void {
 function openPulsePreview(report: PulseReport): void {
   const meta = getById<HTMLElement>('pulse-preview-meta');
   if (meta) {
-    meta.textContent = `${report.title}・${report.date}・${report.issue_count} 件・模式：${report.mode}`;
+    meta.innerHTML = renderPulsePreviewMeta(report);
   }
   const output = getById<HTMLTextAreaElement>('pulse-preview-output');
   if (output) output.value = report.message;
@@ -5596,23 +5754,36 @@ async function previewPulse(scheduleId: string): Promise<void> {
     showToast('產生結果', '請先儲存任務再產生結果。', 'warn');
     return;
   }
+  pulsePreviewAbort?.abort();
+  const runId = pulsePreviewRunId + 1;
+  pulsePreviewRunId = runId;
+  const controller = new AbortController();
+  pulsePreviewAbort = controller;
   // Open the modal with a loading state right away — generation uses the LLM and
   // can take a while, so the user needs immediate feedback.
-  openPulsePreviewLoading('產生報告中…（使用 AI 整理，請稍候）');
+  openPulsePreviewLoading('syncing');
   try {
     const res = await api<PulseReport & { job_id?: string }>(
       `/api/project-pulse/schedules/${scheduleId}/preview`,
       'POST',
       {},
+      { signal: controller.signal },
     );
+    if (runId !== pulsePreviewRunId || controller.signal.aborted) return;
     if (!res.job_id) {
       openPulsePreview(res);
       return;
     }
     // Async rebuild-then-generate: reflect live phase/progress in the modal.
-    const job = await pollPulseJob(res.job_id, (j) => {
-      setPulsePreviewMeta(`<span class="pulse-spinner"></span> ${escapeHtml(pulsePhaseLabel(j))}`);
-    });
+    const job = await pollPulseJob(
+      res.job_id,
+      (j) => {
+        if (runId !== pulsePreviewRunId || controller.signal.aborted) return;
+        setPulsePreviewLoadingPhase(j.phase, j.progress);
+      },
+      controller.signal,
+    );
+    if (runId !== pulsePreviewRunId || controller.signal.aborted) return;
     if (job.status === 'failed' || !job.result) {
       setPulsePreviewError(job.error || '重建索引失敗。');
       showToast('產生結果', job.error || '重建索引失敗。', 'error');
@@ -5628,11 +5799,19 @@ async function previewPulse(scheduleId: string): Promise<void> {
       message: job.result.message,
       index_built_at: null,
       mode: job.result.mode,
+      generated_at: job.result.generated_at,
+      requested_model: job.result.requested_model,
+      model: job.result.model,
     });
   } catch (err) {
+    if (controller.signal.aborted) return;
     const message = err instanceof Error ? err.message : '產生失敗。';
     setPulsePreviewError(message);
     showToast('產生結果', message, 'error');
+  } finally {
+    if (pulsePreviewAbort === controller) {
+      pulsePreviewAbort = null;
+    }
   }
 }
 
@@ -6522,9 +6701,9 @@ function getRagQuestionNotice(): {
       tone: 'fallback',
       title: state.ragUi.rebuilding ? '正在建立知識索引' : '尚未建立留言索引',
       body: state.ragUi.rebuilding
-        ? `目前使用 Issue 清單模式回答，索引完成後（${Math.round(
+        ? `目前使用 Issue 清單模式回答，待索引完成後（${Math.round(
             state.ragUi.rebuildProgress,
-          )}%）會更準。`
+          )}%）會包含更多 Issue 細節，回答會更準確。`
         : '目前使用 Issue 清單模式，留言索引建立後會更準。',
     };
   }
@@ -6562,7 +6741,7 @@ function renderRagQuestionState(): void {
     : '';
 
   input.disabled = locked;
-  input.placeholder = locked ? 'RAG 索引建立完成後即可提問' : '想問哪一筆 Issue、風險或進度？';
+  input.placeholder = locked ? '知識索引建立完成後即可提問' : '想問哪一筆 Issue、風險或進度？';
   sendBtn.disabled = locked || isSending;
 
   panel.querySelectorAll<HTMLButtonElement>('.chat-suggestion-btn').forEach((btn) => {
@@ -6659,11 +6838,12 @@ async function sendChatMessage(input: HTMLInputElement): Promise<void> {
   msgs.appendChild(typingEl);
   msgs.scrollTop = msgs.scrollHeight;
 
+  const requestedModel = state.uiPreferences.chatRagModel;
   try {
     const result = await api<ChatResponse>('/api/chat', 'POST', {
       question,
       history: chatHistory.slice(0, -1),
-      preferred_model: state.uiPreferences.chatRagModel,
+      preferred_model: requestedModel,
       model_candidates: CHAT_RAG_GEMINI_MODEL_LIST,
       use_rag: true,
       top_k: 6,
@@ -6685,7 +6865,15 @@ async function sendChatMessage(input: HTMLInputElement): Promise<void> {
     const sources =
       !isContextTrace && isInconclusiveAnswer(result.answer) ? undefined : result.sources;
 
-    appendChatMsg(msgs, 'assistant', formattedAnswer, result.model, sources, result.retrieval_mode);
+    appendChatMsg(
+      msgs,
+      'assistant',
+      formattedAnswer,
+      result.model,
+      sources,
+      result.retrieval_mode,
+      requestedModel,
+    );
   } catch (err: any) {
     typingEl.remove();
     const errMsg = err?.message || '未知錯誤';
@@ -6710,17 +6898,27 @@ function appendChatMsg(
   model?: string,
   sources?: ChatSource[],
   retrievalMode?: ResolvedRetrievalMode,
+  requestedModel?: string,
 ): void {
   const el = document.createElement('div');
   el.className = `chat-msg ${role}`;
 
   const modeLabel = retrievalMode ? RETRIEVAL_MODE_LABELS[retrievalMode] : '';
-  const metaParts = [
-    modeLabel ? `使用模式：${modeLabel}` : '',
-    model ? escapeHtml(model) : '',
-  ].filter(Boolean);
+  let modelLabel = '';
+  let isFallback = false;
+  if (model) {
+    if (requestedModel && requestedModel !== model) {
+      isFallback = true;
+      modelLabel = `已自動切換：${escapeHtml(requestedModel)} → ${escapeHtml(model)}`;
+    } else {
+      modelLabel = escapeHtml(model);
+    }
+  }
+  const metaParts = [modeLabel ? `使用模式：${modeLabel}` : '', modelLabel].filter(Boolean);
+  const metaClass = isFallback ? 'chat-msg-meta chat-msg-fallback' : 'chat-msg-meta';
+  const metaTitle = isFallback ? ' title="原選模型過載或限流，已自動改用可用模型"' : '';
   const metaHtml = metaParts.length
-    ? `<div class="chat-msg-meta">${metaParts.join(' · ')}</div>`
+    ? `<div class="${metaClass}"${metaTitle}>${metaParts.join(' · ')}</div>`
     : '';
   const sourcesHtml = renderChatSources(sources);
 
@@ -6808,14 +7006,18 @@ function formatChatAnswer(text: string): string {
   // Models often emit numbered lists inline ("1. … 2. … 3. …") in one paragraph.
   // Put each item on its own line so the list formatting below can pick it up.
   // The lookbehind for a non-"." char avoids splitting version numbers like 2.0.0.
-  let html = text.replace(/(^|[^\d.])\s*(\d{1,2})\.\s+(?=\S)/g, '$1\n$2. ');
+  let html = text
+    .replace(/\r\n/g, '\n')
+    .replace(/(^|[^\d.])\s*(\d{1,2})\.\s+(?=\S)/g, '$1\n$2. ')
+    .replace(/\s+[•●]\s+(?=\S)/g, '\n- ')
+    .replace(/^\s*[•●]\s+/gm, '- ');
 
   // Convert markdown to HTML
   html = html
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/^### (.+)$/gm, '<h4>$1</h4>')
     .replace(/^## (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/^- (.+)$/gm, '<li class="chat-subitem">$1</li>')
     .replace(/^(\d+)\. (.+)$/gm, '<li><strong>$1.</strong> $2</li>')
     .replace(/(<li>.*<\/li>\n?)+/g, (match) => `<ul>${match}</ul>`)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -7239,14 +7441,13 @@ function wireEvents(): void {
     const current = textarea.value.trim();
     const isDefault =
       current === '' ||
+      current === PULSE_LEGACY_DAILY_INSTRUCTION ||
       Object.values(PULSE_DEFAULT_INSTRUCTIONS).some((value) => value === current);
     if (isDefault) {
       textarea.value = pulseDefaultInstruction((event.currentTarget as HTMLSelectElement).value);
     }
   });
-  bind<HTMLButtonElement>('pulse-preview-close', 'click', () =>
-    pulseOverlay('pulse-preview-overlay', false),
-  );
+  bind<HTMLButtonElement>('pulse-preview-close', 'click', () => closePulsePreview());
   bind<HTMLButtonElement>('pulse-preview-copy', 'click', () =>
     copyPulseReport().catch(handleError),
   );
