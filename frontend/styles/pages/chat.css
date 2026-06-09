@@ -399,6 +399,12 @@ html[data-theme='light'] .chat-rag-state.fallback .chat-rag-state__card {
   padding: 0 4px;
 }
 
+.chat-msg-meta.chat-msg-fallback {
+  color: var(--amber-400, #fbbf24);
+  font-weight: 600;
+  cursor: help;
+}
+
 .chat-msg-sources .chat-msg-meta {
   margin-bottom: 6px;
   font-size: 11px;

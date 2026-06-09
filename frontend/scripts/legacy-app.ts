@@ -78,15 +78,23 @@ const MAX_SIDEBAR_WIDTH = 360;
 const LOCAL_CONFIG_CACHE_KEY = 'repo-radar:config-cache';
 const UI_PREFERENCES_KEY = 'repo-radar:ui-preferences';
 const ARRANGE_PROMPT_TEMPLATES_KEY = 'repo-radar:arrange-prompt-templates';
+// Azure 模型（顯示名稱須與 backend/.env 的 AZURE_LLM_MODEL_* 第一欄一致）
+const AZURE_LLM_MODEL_LIST = ['gpt-5.4', 'Kimi-K2.5', 'claude-opus-4-6-2026V2'];
 const DEFAULT_GEMINI_MODEL_LIST = [
   'gemini-2.5-pro',
   'gemini-3.5-flash',
   'gemini-2.5-flash',
   'gemma-4-31b-it',
   'gemma-4-26b-a4b-it',
+  ...AZURE_LLM_MODEL_LIST,
 ];
-const ARRANGE_GEMINI_MODEL_LIST = ['gemini-2.5-pro', 'gemini-3.5-flash'];
-const CHAT_RAG_GEMINI_MODEL_LIST = ['gemini-3.5-flash', 'gemini-2.5-pro', 'gemma-4-26b-a4b-it'];
+const ARRANGE_GEMINI_MODEL_LIST = ['gemini-2.5-pro', 'gemini-3.5-flash', ...AZURE_LLM_MODEL_LIST];
+const CHAT_RAG_GEMINI_MODEL_LIST = [
+  'gemini-3.5-flash',
+  'gemini-2.5-pro',
+  'gemma-4-26b-a4b-it',
+  ...AZURE_LLM_MODEL_LIST,
+];
 const DISCUSSION_SUMMARY_GEMINI_MODEL_LIST = ['gemini-2.5-flash', 'gemma-4-31b-it'];
 const DEFAULT_GEMINI_MODEL = ARRANGE_GEMINI_MODEL_LIST[0];
 const DEFAULT_CHAT_RAG_MODEL = CHAT_RAG_GEMINI_MODEL_LIST[0];
@@ -5675,11 +5683,12 @@ async function sendChatMessage(input: HTMLInputElement): Promise<void> {
   msgs.appendChild(typingEl);
   msgs.scrollTop = msgs.scrollHeight;
 
+  const requestedModel = state.uiPreferences.chatRagModel;
   try {
     const result = await api<ChatResponse>('/api/chat', 'POST', {
       question,
       history: chatHistory.slice(0, -1),
-      preferred_model: state.uiPreferences.chatRagModel,
+      preferred_model: requestedModel,
       model_candidates: CHAT_RAG_GEMINI_MODEL_LIST,
       use_rag: true,
       top_k: 6,
@@ -5688,7 +5697,14 @@ async function sendChatMessage(input: HTMLInputElement): Promise<void> {
     chatHistory.push({ role: 'assistant', content: result.answer });
     typingEl.remove();
 
-    appendChatMsg(msgs, 'assistant', formatChatAnswer(result.answer), result.model, result.sources);
+    appendChatMsg(
+      msgs,
+      'assistant',
+      formatChatAnswer(result.answer),
+      result.model,
+      result.sources,
+      requestedModel,
+    );
   } catch (err: any) {
     typingEl.remove();
     const errMsg = err?.message || '未知錯誤';
@@ -5712,11 +5728,21 @@ function appendChatMsg(
   html: string,
   model?: string,
   sources?: ChatSource[],
+  requestedModel?: string,
 ): void {
   const el = document.createElement('div');
   el.className = `chat-msg ${role}`;
 
-  const metaHtml = model ? `<div class="chat-msg-meta">${escapeHtml(model)}</div>` : '';
+  let metaHtml = '';
+  if (model) {
+    if (requestedModel && requestedModel !== model) {
+      metaHtml =
+        `<div class="chat-msg-meta chat-msg-fallback" title="原選模型過載或限流，已自動改用可用模型">` +
+        `⚠ 已自動切換：${escapeHtml(requestedModel)} → ${escapeHtml(model)}</div>`;
+    } else {
+      metaHtml = `<div class="chat-msg-meta">${escapeHtml(model)}</div>`;
+    }
+  }
   const sourcesHtml = renderChatSources(sources);
 
   el.innerHTML = `<div class="chat-msg-content">${html}${sourcesHtml}</div>${metaHtml}`;
