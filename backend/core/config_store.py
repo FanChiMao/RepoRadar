@@ -55,6 +55,24 @@ CONFIG_PATH = data_dir() / "config.json"
 CACHE_PATH = data_dir() / "issues_cache.json"
 META_PATH = data_dir() / "meta.json"
 REPORT_DIR = data_dir() / "reports"
+DAILY_BRIEFING_PATH = data_dir() / "daily_briefing.json"
+DAILY_BRIEFING_HISTORY_PATH = data_dir() / "daily_briefing_history.json"
+
+MAX_BRIEFING_HISTORY = 20
+
+# Daily Issue Briefing settings. The full Teams webhook URL is persisted here
+# (it is sensitive) but never returned to the frontend — see public_briefing_settings.
+DEFAULT_BRIEFING: dict[str, Any] = {
+    "enabled": False,
+    "teams_webhook_url": "",
+    "send_time": "18:30",
+    "timezone": "Asia/Taipei",
+    "workdays": [1, 2, 3, 4, 5],  # Monday=1 .. Sunday=7
+    "updated_issue_window": "today",
+    "include_risks": True,
+    "include_next_steps": True,
+    "include_source_links": True,
+}
 
 
 def normalize_project_ref_history(
@@ -217,3 +235,110 @@ def load_meta() -> dict[str, Any]:
 def save_meta(payload: dict[str, Any]) -> dict[str, Any]:
     write_json(META_PATH, payload)
     return payload
+
+
+def _normalize_send_time(value: Any) -> str:
+    text = str(value or "").strip()
+    try:
+        hour, minute = (int(part) for part in text.split(":"))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+    except (ValueError, TypeError):
+        pass
+    return DEFAULT_BRIEFING["send_time"]
+
+
+def _normalize_workdays(value: Any) -> list[int]:
+    if not isinstance(value, list):
+        return list(DEFAULT_BRIEFING["workdays"])
+    days: list[int] = []
+    for item in value:
+        try:
+            day = int(item)
+        except (ValueError, TypeError):
+            continue
+        if 1 <= day <= 7 and day not in days:
+            days.append(day)
+    return sorted(days)
+
+
+def _normalize_briefing(raw: Any) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    payload = deepcopy(DEFAULT_BRIEFING)
+    payload["enabled"] = bool(source.get("enabled", payload["enabled"]))
+    payload["teams_webhook_url"] = str(source.get("teams_webhook_url") or "").strip()
+    payload["send_time"] = _normalize_send_time(
+        source.get("send_time", payload["send_time"])
+    )
+    payload["timezone"] = (
+        str(source.get("timezone") or payload["timezone"]).strip()
+        or payload["timezone"]
+    )
+    payload["workdays"] = _normalize_workdays(source.get("workdays"))
+    payload["updated_issue_window"] = (
+        str(
+            source.get("updated_issue_window") or payload["updated_issue_window"]
+        ).strip()
+        or payload["updated_issue_window"]
+    )
+    payload["include_risks"] = bool(
+        source.get("include_risks", payload["include_risks"])
+    )
+    payload["include_next_steps"] = bool(
+        source.get("include_next_steps", payload["include_next_steps"])
+    )
+    payload["include_source_links"] = bool(
+        source.get("include_source_links", payload["include_source_links"])
+    )
+    return payload
+
+
+def load_briefing_settings() -> dict[str, Any]:
+    return _normalize_briefing(read_json(DAILY_BRIEFING_PATH, {}))
+
+
+def save_briefing_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    """Persist briefing settings, preserving the stored webhook URL unless the
+    caller sends a new one or explicitly asks to clear it. The full URL never
+    leaves the backend except on the outbound Teams POST."""
+    existing = load_briefing_settings()
+    merged = _normalize_briefing(payload)
+
+    incoming_url = str((payload or {}).get("teams_webhook_url") or "").strip()
+    if (payload or {}).get("clear_teams_webhook_url"):
+        merged["teams_webhook_url"] = ""
+    elif not incoming_url:
+        merged["teams_webhook_url"] = existing.get("teams_webhook_url") or ""
+    else:
+        merged["teams_webhook_url"] = incoming_url
+
+    write_json(DAILY_BRIEFING_PATH, merged)
+    return merged
+
+
+def public_briefing_settings(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Frontend-safe view: strips the real webhook URL, exposes only a masked
+    preview plus a boolean flag."""
+    # Lazy import avoids an import cycle (the service imports rag_service, which
+    # imports this module at load time).
+    from .daily_briefing_service import mask_webhook_url
+
+    settings = deepcopy(payload or load_briefing_settings())
+    url = str(settings.get("teams_webhook_url") or "")
+    settings.pop("teams_webhook_url", None)
+    settings["has_teams_webhook_url"] = bool(url)
+    settings["teams_webhook_url_masked"] = mask_webhook_url(url)
+    return settings
+
+
+def load_briefing_history() -> list[dict[str, Any]]:
+    data = read_json(DAILY_BRIEFING_HISTORY_PATH, [])
+    return data if isinstance(data, list) else []
+
+
+def append_briefing_history(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    history = load_briefing_history()
+    history.insert(0, entry)  # newest first
+    history = history[:MAX_BRIEFING_HISTORY]
+    write_json(DAILY_BRIEFING_HISTORY_PATH, history)
+    return history

@@ -20,12 +20,16 @@
   weekly_report_time: string;
 };
 
+type RetrievalMode = 'auto' | 'fast-rag' | 'context-trace';
+type ResolvedRetrievalMode = 'fast-rag' | 'context-trace' | 'issue-list';
+
 type ChatSource = {
   issue_iid: number;
   chunk_id: string;
   title: string;
   score: number;
   source_type: string;
+  web_url?: string | null;
   discussion_id?: string | null;
   note_ids?: number[];
 };
@@ -34,6 +38,7 @@ type ChatResponse = {
   answer: string;
   model: string;
   mode: 'rag' | 'issue_list';
+  retrieval_mode?: ResolvedRetrievalMode;
   sources: ChatSource[];
 };
 
@@ -79,7 +84,7 @@ const LOCAL_CONFIG_CACHE_KEY = 'repo-radar:config-cache';
 const UI_PREFERENCES_KEY = 'repo-radar:ui-preferences';
 const ARRANGE_PROMPT_TEMPLATES_KEY = 'repo-radar:arrange-prompt-templates';
 // Azure 模型（顯示名稱須與 backend/.env 的 AZURE_LLM_MODEL_* 第一欄一致）
-const AZURE_LLM_MODEL_LIST = ['gpt-5.4', 'Kimi-K2.5', 'claude-opus-4-6-2026V2'];
+const AZURE_LLM_MODEL_LIST = ['gpt-5.4', 'Kimi-K2.5', 'claude-opus'];
 const DEFAULT_GEMINI_MODEL_LIST = [
   'gemini-2.5-pro',
   'gemini-3.5-flash',
@@ -95,15 +100,29 @@ const CHAT_RAG_GEMINI_MODEL_LIST = [
   'gemma-4-26b-a4b-it',
   ...AZURE_LLM_MODEL_LIST,
 ];
+const PULSE_LLM_MODEL_LIST = [
+  ...AZURE_LLM_MODEL_LIST,
+  ...CHAT_RAG_GEMINI_MODEL_LIST.filter((model) => !AZURE_LLM_MODEL_LIST.includes(model)),
+];
 const DISCUSSION_SUMMARY_GEMINI_MODEL_LIST = ['gemini-2.5-flash', 'gemma-4-31b-it'];
 const DEFAULT_GEMINI_MODEL = ARRANGE_GEMINI_MODEL_LIST[0];
 const DEFAULT_CHAT_RAG_MODEL = CHAT_RAG_GEMINI_MODEL_LIST[0];
+const DEFAULT_PULSE_LLM_MODEL = PULSE_LLM_MODEL_LIST[0];
+const RETRIEVAL_MODE_LIST: RetrievalMode[] = ['auto', 'fast-rag', 'context-trace'];
+const DEFAULT_RETRIEVAL_MODE: RetrievalMode = 'auto';
+const RETRIEVAL_MODE_LABELS: Record<ResolvedRetrievalMode | 'auto', string> = {
+  auto: '自動',
+  'fast-rag': '快速檢索',
+  'context-trace': '脈絡追蹤',
+  'issue-list': 'Issue 清單',
+};
 const DEFAULT_UI_PREFERENCES = {
   theme: 'dark',
   scale: 100,
   sidebarWidth: 304,
   geminiModel: DEFAULT_GEMINI_MODEL,
   chatRagModel: DEFAULT_CHAT_RAG_MODEL,
+  retrievalMode: DEFAULT_RETRIEVAL_MODE,
   geminiModelList: [...DEFAULT_GEMINI_MODEL_LIST],
   arrangePrompt: `你是一位資深技術 PM，請根據提供的 Issue 原始資料，整理成清楚、可追蹤的中文摘要。
 
@@ -305,6 +324,7 @@ type UiPreferences = {
   sidebarWidth: number;
   geminiModel: GeminiModel;
   chatRagModel: GeminiModel;
+  retrievalMode: RetrievalMode;
   geminiModelList: string[];
   arrangePrompt: string;
 };
@@ -377,6 +397,7 @@ const state = {
   ganttMonth: '',
   ganttWeek: '',
   currentView: 'dashboard',
+  chatDockOpen: false,
   uiPreferences: createDefaultUiPreferences(),
   arrangePromptTemplates: [] as ArrangePromptTemplate[],
   selectedArrangePromptTemplateId: '' as string,
@@ -521,6 +542,9 @@ function readUiPreferences(): UiPreferences {
         CHAT_RAG_GEMINI_MODEL_LIST,
         DEFAULT_CHAT_RAG_MODEL,
       ),
+      retrievalMode: RETRIEVAL_MODE_LIST.includes(parsed.retrievalMode as RetrievalMode)
+        ? (parsed.retrievalMode as RetrievalMode)
+        : DEFAULT_RETRIEVAL_MODE,
       geminiModelList,
       arrangePrompt:
         typeof parsed.arrangePrompt === 'string' && parsed.arrangePrompt.trim()
@@ -587,6 +611,7 @@ function applyUiPreferences(): void {
     CHAT_RAG_GEMINI_MODEL_LIST,
     DEFAULT_CHAT_RAG_MODEL,
   );
+  syncRetrievalModeSegmented();
 
   const arrangeModelLabel = getById<HTMLElement>('arrange-model-label');
   if (arrangeModelLabel && !getSelectedArrangeJob()) {
@@ -644,6 +669,23 @@ function updateChatRagGeminiModelPreference(): void {
     DEFAULT_CHAT_RAG_MODEL,
   );
   applyUiPreferences();
+  saveUiPreferences();
+}
+
+function syncRetrievalModeSegmented(): void {
+  const group = getById<HTMLElement>('chat-retrieval-mode');
+  if (!group) return;
+  const active = state.uiPreferences.retrievalMode;
+  group.querySelectorAll<HTMLButtonElement>('.chat-mode-btn').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.mode === active);
+  });
+}
+
+function updateRetrievalModePreference(mode: RetrievalMode): void {
+  state.uiPreferences.retrievalMode = RETRIEVAL_MODE_LIST.includes(mode)
+    ? mode
+    : DEFAULT_RETRIEVAL_MODE;
+  syncRetrievalModeSegmented();
   saveUiPreferences();
 }
 
@@ -3315,6 +3357,24 @@ function setActiveView(view: string): void {
     renderArrangeSelection();
     void loadArrangeHistory();
   }
+  if (view === 'briefing') {
+    void loadProjectPulseView().catch(handleError);
+  }
+  if (view === 'assistant') {
+    // The full page always hosts the chat surface; reclaim it from the dock.
+    mountChatSurfaceTo('assistant-mount');
+    getById<HTMLElement>('chat-dock')?.classList.remove('open');
+    state.chatDockOpen = false;
+    renderRagStatusBadge();
+    renderRagQuestionState();
+    const input = getById<HTMLInputElement>('chat-input');
+    if (input && !input.disabled) {
+      window.setTimeout(() => input.focus(), 0);
+    }
+  }
+
+  // The chat-launcher FAB is redundant while the assistant view or dock is open.
+  updateChatLauncherVisibility();
 }
 
 function initViewNavigation(): void {
@@ -4904,6 +4964,1025 @@ async function saveConfig(): Promise<void> {
   setStatus('設定已儲存', 'success');
 }
 
+// ── Daily Issue Briefing ────────────────────────────────────────────────────
+interface BriefingSettings {
+  enabled: boolean;
+  has_teams_webhook_url: boolean;
+  teams_webhook_url_masked: string;
+  send_time: string;
+  timezone: string;
+  workdays: number[];
+  updated_issue_window: string;
+  include_risks: boolean;
+  include_next_steps: boolean;
+  include_source_links: boolean;
+}
+
+interface BriefingResult {
+  ok: boolean;
+  date: string;
+  issue_count: number;
+  title: string;
+  message: string;
+  index_built_at: string | null;
+  mode: string;
+}
+
+interface BriefingHistoryItem {
+  at: string;
+  date: string;
+  trigger: string;
+  channel?: string;
+  ok: boolean;
+  issue_count: number;
+  mode: string;
+  status_code: number | null;
+  error: string | null;
+  index_built_at?: string | null;
+  title?: string;
+}
+
+function fillBriefingForm(settings: BriefingSettings): void {
+  const enabled = getById<HTMLInputElement>('briefing-enabled');
+  if (enabled) enabled.checked = Boolean(settings.enabled);
+
+  const webhook = getById<HTMLInputElement>('briefing-webhook');
+  if (webhook) webhook.value = ''; // never echo the secret; show status separately
+  const webhookStatus = getById<HTMLElement>('briefing-webhook-status');
+  if (webhookStatus) {
+    webhookStatus.textContent = settings.has_teams_webhook_url
+      ? `已設定：${settings.teams_webhook_url_masked}`
+      : '尚未設定';
+  }
+  const clear = getById<HTMLInputElement>('briefing-webhook-clear');
+  if (clear) clear.checked = false;
+
+  const sendTime = getById<HTMLInputElement>('briefing-send-time');
+  if (sendTime) sendTime.value = settings.send_time || '18:30';
+  const timezone = getById<HTMLInputElement>('briefing-timezone');
+  if (timezone) timezone.value = settings.timezone || 'Asia/Taipei';
+
+  const workdays = new Set(settings.workdays || []);
+  document
+    .querySelectorAll<HTMLInputElement>('#briefing-workdays input[data-workday]')
+    .forEach((box) => {
+      box.checked = workdays.has(Number(box.dataset.workday));
+    });
+
+  const risks = getById<HTMLInputElement>('briefing-include-risks');
+  if (risks) risks.checked = Boolean(settings.include_risks);
+  const nextSteps = getById<HTMLInputElement>('briefing-include-next-steps');
+  if (nextSteps) nextSteps.checked = Boolean(settings.include_next_steps);
+  const links = getById<HTMLInputElement>('briefing-include-links');
+  if (links) links.checked = Boolean(settings.include_source_links);
+}
+
+function readBriefingForm(): Record<string, unknown> {
+  const workdays: number[] = [];
+  document
+    .querySelectorAll<HTMLInputElement>('#briefing-workdays input[data-workday]')
+    .forEach((box) => {
+      if (box.checked) workdays.push(Number(box.dataset.workday));
+    });
+
+  const webhook = getById<HTMLInputElement>('briefing-webhook')?.value.trim() || '';
+  const clear = getById<HTMLInputElement>('briefing-webhook-clear')?.checked || false;
+
+  return {
+    enabled: getById<HTMLInputElement>('briefing-enabled')?.checked || false,
+    teams_webhook_url: webhook, // '' keeps the stored URL on the backend
+    clear_teams_webhook_url: clear,
+    send_time: getById<HTMLInputElement>('briefing-send-time')?.value || '18:30',
+    timezone: getById<HTMLInputElement>('briefing-timezone')?.value.trim() || 'Asia/Taipei',
+    workdays,
+    updated_issue_window: 'today',
+    include_risks: getById<HTMLInputElement>('briefing-include-risks')?.checked || false,
+    include_next_steps: getById<HTMLInputElement>('briefing-include-next-steps')?.checked || false,
+    include_source_links: getById<HTMLInputElement>('briefing-include-links')?.checked || false,
+  };
+}
+
+async function loadBriefingSettings(): Promise<void> {
+  const settings = await api<BriefingSettings>('/api/briefing/settings');
+  fillBriefingForm(settings);
+}
+
+async function saveBriefingSettings(): Promise<void> {
+  const payload = readBriefingForm();
+  const settings = await api<BriefingSettings>('/api/briefing/settings', 'POST', payload);
+  fillBriefingForm(settings);
+  showToast('Daily Briefing', '設定已儲存', 'success');
+}
+
+async function testBriefingWebhook(): Promise<void> {
+  const result = await api<{ ok: boolean; message: string }>(
+    '/api/briefing/test-teams',
+    'POST',
+    {},
+  );
+  showToast('Test Teams Webhook', result.message, result.ok ? 'success' : 'error');
+  void loadBriefingHistory();
+}
+
+async function previewBriefing(): Promise<void> {
+  const output = getById<HTMLTextAreaElement>('briefing-preview-output');
+  if (output) output.value = '產生預覽中…';
+  const result = await api<BriefingResult>('/api/briefing/preview', 'POST', {});
+  if (output) output.value = result.message;
+  showToast(
+    'Generate Preview',
+    `今日有更新的 Issue：${result.issue_count} 件（模式：${result.mode}）`,
+    'success',
+  );
+}
+
+async function sendBriefingNow(): Promise<void> {
+  const result = await api<{ ok: boolean; issue_count: number; message: string }>(
+    '/api/briefing/send-now',
+    'POST',
+    {},
+  );
+  showToast('Send Now', result.message, result.ok ? 'success' : 'error');
+  void loadBriefingHistory();
+}
+
+async function loadBriefingHistory(): Promise<void> {
+  const container = getById<HTMLElement>('briefing-history');
+  if (!container) return;
+  const data = await api<{ items: BriefingHistoryItem[] }>('/api/briefing/history');
+  const items = data.items || [];
+  if (!items.length) {
+    container.innerHTML = '<div class="briefing-history-empty">尚無發送紀錄。</div>';
+    return;
+  }
+  container.innerHTML = items
+    .map((item) => {
+      const when = fmtDate(item.at);
+      const dateLabel = item.date ? `${item.date}・` : '';
+      const detail = item.ok
+        ? `${item.trigger}・${dateLabel}${item.issue_count} 件・${item.mode || '-'}`
+        : `${item.trigger}・${escapeHtml(item.error || '失敗')}`;
+      return `
+        <div class="briefing-history-row">
+          <span class="dot ${item.ok ? 'ok' : 'fail'}"></span>
+          <span>${escapeHtml(when)}</span>
+          <span class="meta">${escapeHtml(detail)}</span>
+        </div>`;
+    })
+    .join('');
+}
+
+// ── Project Pulse (專案脈搏) ─────────────────────────────────────────────────
+interface PulseSchedule {
+  id: string;
+  enabled: boolean;
+  repo_id: string;
+  repo_name: string;
+  provider: string;
+  name: string;
+  report_type: string;
+  custom_instruction: string;
+  preferred_model: string;
+  send_time: string;
+  timezone: string;
+  workdays: number[];
+  channel_type: string;
+  has_teams_webhook_url: boolean;
+  teams_webhook_url_masked: string;
+  updated_issue_window: string;
+  issue_state: string;
+  labels: string[];
+  assignees: string[];
+  include_risks: boolean;
+  include_next_steps: boolean;
+  include_source_links: boolean;
+  rebuild_index_before_send: boolean;
+  last_run_at: string | null;
+  last_run_status: string | null;
+  last_run_error: string | null;
+  next_run_at: string | null;
+}
+
+interface PulseJobResult {
+  ok: boolean;
+  title: string;
+  date: string;
+  issue_count: number;
+  mode: string;
+  message: string;
+  generated_at?: string | null;
+  requested_model?: string | null;
+  model?: string | null;
+  sent_ok: boolean | null;
+  sent_error: string | null;
+}
+
+interface PulseJob {
+  job_id: string;
+  schedule_id: string;
+  run_type: string;
+  do_send: boolean;
+  status: string; // queued / running / completed / failed
+  phase: string; // syncing / indexing / generating / sending / completed
+  progress: number;
+  result: PulseJobResult | null;
+  error: string | null;
+}
+
+interface PulseSummary {
+  enabled_count: number;
+  next_run_at: string | null;
+  recent_failures: number;
+  monitored_repos: number;
+}
+
+interface PulseListResponse {
+  items: PulseSchedule[];
+  summary: PulseSummary;
+}
+
+interface PulseRepo {
+  repo_id: string;
+  repo_name: string;
+  provider: string;
+  source_ref: string;
+  issue_count: number;
+  index_built_at: string | null;
+}
+
+interface PulseReport {
+  ok: boolean;
+  schedule_id: string;
+  repo_id: string;
+  date: string;
+  issue_count: number;
+  title: string;
+  message: string;
+  index_built_at: string | null;
+  mode: string;
+  generated_at?: string | null;
+  requested_model?: string | null;
+  model?: string | null;
+}
+
+interface PulseHistoryItem {
+  id: string;
+  schedule_id: string;
+  repo_id: string;
+  repo_name: string;
+  report_type: string;
+  run_type: string;
+  issue_count: number;
+  ok: boolean;
+  error_message: string;
+  started_at: string;
+  finished_at: string;
+}
+
+// Must match backend project_pulse_store defaults verbatim.
+const PULSE_LEGACY_DAILY_INSTRUCTION = `請整理「選定範圍內今天有任何變動的 Issue」。
+
+請只列出今天有變動的 Issue，變動類型包含但不限於：
+- 新增留言 / 回覆
+- Description / 標題調整
+- Issue 被關閉、重開，或狀態變更
+- Label / Milestone / Assignee / Priority 變更
+- Due date / Estimate / Weight 等欄位變更
+- 其他 metadata 或 issue 內容更新
+
+請使用繁體中文輸出，並避免重述完整歷史。
+若需要背景，最多補一句即可。
+
+每個 Issue 請整理以下內容：
+
+1. Issue 標題與來源連結
+2. 今日變動摘要
+   - 說明今天實際變動了什麼
+   - 若有多種變動，請分點列出
+3. 目前狀態
+   - Open / Closed / Reopened / In Progress 等
+   - 若能判斷目前卡在哪裡，也請簡述
+4. 風險與阻塞
+   - 是否有未解問題、等待他人回覆、需求不明、技術風險或交付風險
+   - 若沒有明顯風險，請寫「目前未見明顯阻塞」
+5. 建議下一步
+   - 給出具體可執行的下一步，而不是籠統建議
+
+最後請附上一段「今日總結」，包含：
+- 今天變動的 Issue 數量
+- 已關閉 / 仍開啟 / 有阻塞的數量
+- 最需要優先追蹤的 1～3 個 Issue
+
+請不要列出今天沒有變動的 Issue。`;
+
+const PULSE_DEFAULT_INSTRUCTIONS: Record<string, string> = {
+  'daily-briefing': PULSE_LEGACY_DAILY_INSTRUCTION,
+
+  'custom-report':
+    '請根據選定時間範圍內的 Issue 更新，產生一份清楚、可行動的專案報告。請依照重要性整理重點，列出需要追蹤的事項、風險與建議下一步。請使用繁體中文，並附上來源連結。',
+};
+
+let pulseSchedules: PulseSchedule[] = [];
+let pulseRepos: PulseRepo[] = [];
+let pulsePreviewAbort: AbortController | null = null;
+let pulsePreviewRunId = 0;
+
+const PULSE_GENERATION_STAGES = [
+  { phase: 'syncing', label: '同步最新資訊' },
+  { phase: 'indexing', label: '同步留言' },
+  { phase: 'generating', label: '產生結果' },
+];
+
+function pulseDefaultInstruction(reportType: string): string {
+  return PULSE_DEFAULT_INSTRUCTIONS[reportType] || PULSE_DEFAULT_INSTRUCTIONS['custom-report'];
+}
+
+function normalizePulseInstruction(instruction: string, reportType: string): string {
+  if (reportType === 'daily-briefing' && instruction === PULSE_LEGACY_DAILY_INSTRUCTION) {
+    return PULSE_DEFAULT_INSTRUCTIONS['daily-briefing'];
+  }
+  return instruction;
+}
+
+function pulseReportTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    'daily-briefing': '每日簡報',
+    'custom-report': '自訂報告',
+  };
+  return labels[type] || type;
+}
+
+function pulseRunTypeLabel(runType: string): string {
+  const labels: Record<string, string> = {
+    scheduled: '排程',
+    manual: '手動',
+    test: '測試',
+    preview: '預覽',
+  };
+  return labels[runType] || runType;
+}
+
+function pulseWorkdaysLabel(days: number[]): string {
+  if (!days || !days.length) return '—';
+  const sorted = [...days].sort((a, b) => a - b);
+  if (sorted.join(',') === '1,2,3,4,5') return 'Mon-Fri';
+  const names = ['一', '二', '三', '四', '五', '六', '日'];
+  return sorted.map((d) => names[d - 1] || String(d)).join('');
+}
+
+function pulseLastRunCell(schedule: PulseSchedule): string {
+  const status = schedule.last_run_status;
+  if (!status) return '—';
+  if (status === 'success') return '<span class="pulse-run-ok">成功</span>';
+  if (status === 'failed') return '<span class="pulse-run-fail">失敗</span>';
+  if (status === 'skipped') return '已略過';
+  return escapeHtml(status);
+}
+
+function pulseOverlay(id: string, open: boolean): void {
+  const overlay = getById<HTMLElement>(id);
+  if (!overlay) return;
+  overlay.classList.toggle('open', open);
+  overlay.setAttribute('aria-hidden', open ? 'false' : 'true');
+}
+
+function pulsePhaseLabel(job: PulseJob): string {
+  const labels: Record<string, string> = {
+    queued: '排隊中…',
+    syncing: '同步最新資訊…',
+    indexing: `同步留言… ${Math.round(job.progress)}%`,
+    generating: '產生報告中…',
+    sending: '發送中…',
+    completed: '完成',
+    failed: '失敗',
+  };
+  return labels[job.phase] || '處理中…';
+}
+
+function pulseGenerationStageIndex(phase: string): number {
+  if (phase === 'queued' || phase === 'syncing') return 0;
+  if (phase === 'indexing') return 1;
+  if (phase === 'generating' || phase === 'sending' || phase === 'completed') return 2;
+  return 0;
+}
+
+function renderPulseStageLoader(phase: string, progress = 0): string {
+  const activeIndex = pulseGenerationStageIndex(phase);
+  const activeStage = PULSE_GENERATION_STAGES[activeIndex] || PULSE_GENERATION_STAGES[0];
+  const progressText = phase === 'indexing' ? ` ${Math.round(progress)}%` : '';
+  const blocks = PULSE_GENERATION_STAGES.map((stage, index) => {
+    const state = index < activeIndex ? 'done' : index === activeIndex ? 'active' : 'pending';
+    const label = stage.phase === activeStage.phase ? `${stage.label}${progressText}` : stage.label;
+    return `<span class="pulse-stage-block is-${state}"><span class="pulse-stage-label">${escapeHtml(label)}</span></span>`;
+  }).join('<span class="pulse-stage-arrow">→</span>');
+  const currentLabel =
+    phase === 'queued'
+      ? '排隊中'
+      : `${activeStage.label}${progressText ? ` ${progressText.trim()}` : ''}`;
+  return `
+    <div class="pulse-stage-loader" role="status" aria-live="polite" aria-label="${escapeHtml(currentLabel)}">
+      ${blocks}
+    </div>`;
+}
+
+function pulseAbortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        window.clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      },
+      { once: true },
+    );
+  });
+}
+
+// Poll a background pulse job until it finishes; onTick fires every poll.
+async function pollPulseJob(
+  jobId: string,
+  onTick: (job: PulseJob) => void,
+  signal?: AbortSignal,
+): Promise<PulseJob> {
+  for (;;) {
+    const job = await api<PulseJob>(`/api/project-pulse/jobs/${jobId}`, 'GET', undefined, {
+      signal,
+    });
+    onTick(job);
+    if (job.status === 'completed' || job.status === 'failed') return job;
+    await pulseAbortableDelay(1200, signal);
+  }
+}
+
+function setPulseRowStatus(scheduleId: string, text: string): void {
+  const cell = document.querySelector<HTMLElement>(
+    `[data-pulse-id="${scheduleId}"] .pulse-lastrun`,
+  );
+  if (cell) cell.textContent = text;
+}
+
+function setPulseRowBusy(scheduleId: string, text: string): void {
+  const cell = document.querySelector<HTMLElement>(
+    `[data-pulse-id="${scheduleId}"] .pulse-lastrun`,
+  );
+  if (cell) cell.innerHTML = `<span class="pulse-spinner"></span> ${escapeHtml(text)}`;
+}
+
+// Disable a button and show a spinner while an async action runs, then restore.
+async function runWithButtonBusy(
+  buttonId: string,
+  busyLabel: string,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const button = getById<HTMLButtonElement>(buttonId);
+  const original = button?.innerHTML;
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = `<span class="pulse-spinner"></span> ${escapeHtml(busyLabel)}`;
+  }
+  try {
+    await fn();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      if (original !== undefined) button.innerHTML = original;
+    }
+  }
+}
+
+function setPulsePreviewMeta(html: string): void {
+  const meta = getById<HTMLElement>('pulse-preview-meta');
+  if (meta) meta.innerHTML = html;
+}
+
+function setPulsePreviewLoadingPhase(phase: string, progress = 0): void {
+  setPulsePreviewMeta(renderPulseStageLoader(phase, progress));
+}
+
+function openPulsePreviewLoading(phase: string): void {
+  const output = getById<HTMLTextAreaElement>('pulse-preview-output');
+  if (output) output.value = '';
+  setPulsePreviewLoadingPhase(phase);
+  pulseOverlay('pulse-preview-overlay', true);
+}
+
+function closePulsePreview(): void {
+  pulsePreviewRunId += 1;
+  pulsePreviewAbort?.abort();
+  pulsePreviewAbort = null;
+  pulseOverlay('pulse-preview-overlay', false);
+}
+
+function setPulsePreviewError(message: string): void {
+  setPulsePreviewMeta('');
+  const output = getById<HTMLTextAreaElement>('pulse-preview-output');
+  if (output) output.value = message;
+}
+
+function renderPulsePreviewMeta(report: PulseReport): string {
+  const generatedAt = report.generated_at || report.date;
+  const timeLabel = generatedAt ? escapeHtml(fmtDate(generatedAt)) : '';
+  const requestedModel = (report.requested_model || '').trim();
+  const usedModel = (report.model || '').trim();
+  const modelLabel = usedModel || (requestedModel ? '規則產生' : '');
+  const isFallback = Boolean(requestedModel && usedModel && requestedModel !== usedModel);
+  const metaParts = [
+    timeLabel,
+    isFallback
+      ? `已自動切換：${escapeHtml(requestedModel)} → ${escapeHtml(usedModel)}`
+      : escapeHtml(modelLabel),
+  ].filter(Boolean);
+  const detailParts = [
+    `${escapeHtml(String(report.issue_count))} 件`,
+    `模式：${escapeHtml(report.mode)}`,
+  ];
+  const metaClass = isFallback ? 'pulse-preview-meta pulse-preview-fallback' : 'pulse-preview-meta';
+  const metaTitle = isFallback ? ' title="原選模型過載或限流，已自動改用可用模型"' : '';
+  return `
+    <span class="${metaClass}"${metaTitle}>${metaParts.join(' · ')}</span>
+    <span class="pulse-preview-detail">${detailParts.join(' · ')}</span>`;
+}
+
+async function loadPulse(): Promise<void> {
+  const data = await api<PulseListResponse>('/api/project-pulse/schedules');
+  pulseSchedules = data.items || [];
+  renderPulseSummary(data.summary);
+  renderPulseTable(pulseSchedules);
+}
+
+function renderPulseSummary(summary: PulseSummary | undefined): void {
+  const enabled = getById<HTMLElement>('pulse-summary-enabled');
+  if (enabled) enabled.textContent = String(summary?.enabled_count ?? 0);
+  const next = getById<HTMLElement>('pulse-summary-next');
+  if (next) next.textContent = summary?.next_run_at ? fmtDate(summary.next_run_at) : '—';
+  const failures = getById<HTMLElement>('pulse-summary-failures');
+  if (failures) failures.textContent = String(summary?.recent_failures ?? 0);
+  const repos = getById<HTMLElement>('pulse-summary-repos');
+  if (repos) repos.textContent = String(summary?.monitored_repos ?? 0);
+}
+
+function renderPulseTable(items: PulseSchedule[]): void {
+  const tbody = getById<HTMLElement>('pulse-rows');
+  if (!tbody) return;
+  if (!items.length) {
+    tbody.innerHTML =
+      '<tr><td colspan="10" class="pulse-empty">尚無報告任務，按「新增報告任務」建立第一筆。</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items
+    .map((s) => {
+      const statusDot = s.enabled ? 'on' : 'off';
+      const statusText = s.enabled ? '啟用中' : '已停用';
+      const toggleLabel = s.enabled ? '停用' : '啟用';
+      return `
+        <tr data-pulse-id="${escapeHtml(s.id)}">
+          <td><span class="pulse-status"><span class="dot ${statusDot}"></span>${statusText}</span></td>
+          <td>${escapeHtml(s.repo_name || s.repo_id || '—')}</td>
+          <td>${escapeHtml(s.name)}</td>
+          <td>${escapeHtml(pulseReportTypeLabel(s.report_type))}</td>
+          <td>${escapeHtml(s.send_time)}</td>
+          <td>${escapeHtml(pulseWorkdaysLabel(s.workdays))}</td>
+          <td>Teams</td>
+          <td class="pulse-lastrun">${pulseLastRunCell(s)}</td>
+          <td>${s.next_run_at ? escapeHtml(fmtDate(s.next_run_at)) : '—'}</td>
+          <td>
+            <div class="pulse-row-actions">
+              <button class="ghost-btn" data-pulse-action="edit">編輯</button>
+              <button class="ghost-btn" data-pulse-action="preview">結果</button>
+              <button class="ghost-btn" data-pulse-action="send">發送</button>
+              <button class="ghost-btn" data-pulse-action="toggle">${toggleLabel}</button>
+              <button class="ghost-btn danger" data-pulse-action="delete">刪除</button>
+            </div>
+          </td>
+        </tr>`;
+    })
+    .join('');
+}
+
+async function loadPulseRepos(): Promise<void> {
+  const data = await api<{ items: PulseRepo[] }>('/api/project-pulse/repos');
+  pulseRepos = data.items || [];
+}
+
+function fillPulseRepoSelect(schedule: PulseSchedule | null): void {
+  const select = getById<HTMLSelectElement>('pulse-form-repo');
+  if (!select) return;
+  const options = [...pulseRepos];
+  // Keep an editable schedule's repo selectable even if its snapshot is gone.
+  if (schedule && schedule.repo_id && !options.some((r) => r.repo_id === schedule.repo_id)) {
+    options.push({
+      repo_id: schedule.repo_id,
+      repo_name: schedule.repo_name || schedule.repo_id,
+      provider: schedule.provider || '',
+      source_ref: '',
+      issue_count: 0,
+      index_built_at: null,
+    });
+  }
+  if (!options.length) {
+    select.innerHTML = '<option value="">尚無已同步的 Repo，請先在 Connections 同步</option>';
+    return;
+  }
+  select.innerHTML = options
+    .map(
+      (r) =>
+        `<option value="${escapeHtml(r.repo_id)}">${escapeHtml(r.repo_name)}${r.provider ? ` (${escapeHtml(r.provider)})` : ''}</option>`,
+    )
+    .join('');
+  if (schedule && schedule.repo_id) select.value = schedule.repo_id;
+}
+
+function fillPulseForm(schedule: PulseSchedule | null): void {
+  const setVal = (id: string, value: string) => {
+    const el = getById<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(id);
+    if (el) el.value = value;
+  };
+  const setChecked = (id: string, value: boolean) => {
+    const el = getById<HTMLInputElement>(id);
+    if (el) el.checked = value;
+  };
+
+  getById<HTMLInputElement>('pulse-form-id')!.value = schedule?.id || '';
+  const title = getById<HTMLElement>('pulse-form-title');
+  if (title) title.textContent = schedule ? '編輯報告任務' : '新增報告任務';
+
+  setChecked('pulse-form-enabled', schedule ? schedule.enabled : true);
+  setVal('pulse-form-name', schedule?.name || '每日 Issue 摘要');
+  setVal('pulse-form-type', schedule?.report_type || 'daily-briefing');
+  setVal('pulse-form-send-time', schedule?.send_time || '18:30');
+  // Keep a stored timezone selectable even if it isn't one of the presets.
+  const tz = schedule?.timezone || 'Asia/Taipei';
+  const tzSelect = getById<HTMLSelectElement>('pulse-form-timezone');
+  if (tzSelect && !Array.from(tzSelect.options).some((opt) => opt.value === tz)) {
+    tzSelect.add(new Option(tz, tz));
+  }
+  setVal('pulse-form-timezone', tz);
+  setVal('pulse-form-window', schedule?.updated_issue_window || 'today');
+  setVal('pulse-form-state', schedule?.issue_state || 'all');
+  syncGeminiModelSelect(
+    getById<HTMLSelectElement>('pulse-form-model'),
+    schedule?.preferred_model || DEFAULT_PULSE_LLM_MODEL,
+    PULSE_LLM_MODEL_LIST,
+  );
+  setChecked('pulse-form-risks', schedule ? schedule.include_risks : true);
+  setChecked('pulse-form-next', schedule ? schedule.include_next_steps : true);
+  setChecked('pulse-form-links', schedule ? schedule.include_source_links : true);
+  setChecked('pulse-form-rebuild', schedule ? schedule.rebuild_index_before_send : false);
+  setVal(
+    'pulse-form-instruction',
+    normalizePulseInstruction(
+      schedule?.custom_instruction ||
+        pulseDefaultInstruction(schedule?.report_type || 'daily-briefing'),
+      schedule?.report_type || 'daily-briefing',
+    ),
+  );
+
+  const workdays = new Set(schedule?.workdays || [1, 2, 3, 4, 5]);
+  document
+    .querySelectorAll<HTMLInputElement>('#pulse-form-workdays input[data-workday]')
+    .forEach((box) => {
+      box.checked = workdays.has(Number(box.dataset.workday));
+    });
+
+  const webhook = getById<HTMLInputElement>('pulse-form-webhook');
+  if (webhook) webhook.value = '';
+  const status = getById<HTMLElement>('pulse-form-webhook-status');
+  if (status) {
+    status.textContent = schedule?.has_teams_webhook_url
+      ? `已設定：${schedule.teams_webhook_url_masked}`
+      : '尚未設定';
+  }
+  setChecked('pulse-form-webhook-clear', false);
+
+  fillPulseRepoSelect(schedule);
+}
+
+function openPulseForm(schedule: PulseSchedule | null): void {
+  fillPulseForm(schedule);
+  pulseOverlay('pulse-form-overlay', true);
+}
+
+function closePulseForm(): void {
+  pulseOverlay('pulse-form-overlay', false);
+}
+
+function splitCsv(value: string): string[] {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readPulseForm(): Record<string, unknown> {
+  const workdays: number[] = [];
+  document
+    .querySelectorAll<HTMLInputElement>('#pulse-form-workdays input[data-workday]')
+    .forEach((box) => {
+      if (box.checked) workdays.push(Number(box.dataset.workday));
+    });
+
+  const repoId = getById<HTMLSelectElement>('pulse-form-repo')?.value || '';
+  const repo = pulseRepos.find((r) => r.repo_id === repoId);
+
+  return {
+    enabled: getById<HTMLInputElement>('pulse-form-enabled')?.checked ?? true,
+    repo_id: repoId,
+    repo_name: repo?.repo_name || '',
+    provider: repo?.provider || '',
+    name: getById<HTMLInputElement>('pulse-form-name')?.value.trim() || '每日 Issue 摘要',
+    report_type: getById<HTMLSelectElement>('pulse-form-type')?.value || 'daily-briefing',
+    custom_instruction: getById<HTMLTextAreaElement>('pulse-form-instruction')?.value || '',
+    preferred_model:
+      getById<HTMLSelectElement>('pulse-form-model')?.value || DEFAULT_PULSE_LLM_MODEL,
+    send_time: getById<HTMLInputElement>('pulse-form-send-time')?.value || '18:30',
+    timezone: getById<HTMLSelectElement>('pulse-form-timezone')?.value.trim() || 'Asia/Taipei',
+    workdays,
+    channel_type: 'teams-webhook',
+    teams_webhook_url: getById<HTMLInputElement>('pulse-form-webhook')?.value.trim() || '',
+    clear_teams_webhook_url:
+      getById<HTMLInputElement>('pulse-form-webhook-clear')?.checked || false,
+    updated_issue_window: getById<HTMLSelectElement>('pulse-form-window')?.value || 'today',
+    issue_state: getById<HTMLSelectElement>('pulse-form-state')?.value || 'all',
+    include_risks: getById<HTMLInputElement>('pulse-form-risks')?.checked || false,
+    include_next_steps: getById<HTMLInputElement>('pulse-form-next')?.checked || false,
+    include_source_links: getById<HTMLInputElement>('pulse-form-links')?.checked || false,
+    rebuild_index_before_send: getById<HTMLInputElement>('pulse-form-rebuild')?.checked || false,
+  };
+}
+
+function currentPulseFormId(): string {
+  return getById<HTMLInputElement>('pulse-form-id')?.value || '';
+}
+
+async function savePulseForm(): Promise<void> {
+  const payload = readPulseForm();
+  if (!payload.repo_id) {
+    showToast('專案脈搏', '請先選擇一個 Repo。', 'warn');
+    return;
+  }
+  const id = currentPulseFormId();
+  if (id) {
+    await api<PulseSchedule>(`/api/project-pulse/schedules/${id}`, 'PUT', payload);
+  } else {
+    await api<PulseSchedule>('/api/project-pulse/schedules', 'POST', payload);
+  }
+  showToast('專案脈搏', '報告任務已儲存', 'success');
+  closePulseForm();
+  await loadPulse();
+}
+
+function restorePulseDefaultInstruction(): void {
+  const type = getById<HTMLSelectElement>('pulse-form-type')?.value || 'daily-briefing';
+  const textarea = getById<HTMLTextAreaElement>('pulse-form-instruction');
+  if (textarea) textarea.value = pulseDefaultInstruction(type);
+}
+
+function openPulsePreview(report: PulseReport): void {
+  const meta = getById<HTMLElement>('pulse-preview-meta');
+  if (meta) {
+    meta.innerHTML = renderPulsePreviewMeta(report);
+  }
+  const output = getById<HTMLTextAreaElement>('pulse-preview-output');
+  if (output) output.value = report.message;
+  pulseOverlay('pulse-preview-overlay', true);
+}
+
+async function previewPulse(scheduleId: string): Promise<void> {
+  if (!scheduleId) {
+    showToast('產生結果', '請先儲存任務再產生結果。', 'warn');
+    return;
+  }
+  pulsePreviewAbort?.abort();
+  const runId = pulsePreviewRunId + 1;
+  pulsePreviewRunId = runId;
+  const controller = new AbortController();
+  pulsePreviewAbort = controller;
+  // Open the modal with a loading state right away — generation uses the LLM and
+  // can take a while, so the user needs immediate feedback.
+  openPulsePreviewLoading('syncing');
+  try {
+    const res = await api<PulseReport & { job_id?: string }>(
+      `/api/project-pulse/schedules/${scheduleId}/preview`,
+      'POST',
+      {},
+      { signal: controller.signal },
+    );
+    if (runId !== pulsePreviewRunId || controller.signal.aborted) return;
+    if (!res.job_id) {
+      openPulsePreview(res);
+      return;
+    }
+    // Async rebuild-then-generate: reflect live phase/progress in the modal.
+    const job = await pollPulseJob(
+      res.job_id,
+      (j) => {
+        if (runId !== pulsePreviewRunId || controller.signal.aborted) return;
+        setPulsePreviewLoadingPhase(j.phase, j.progress);
+      },
+      controller.signal,
+    );
+    if (runId !== pulsePreviewRunId || controller.signal.aborted) return;
+    if (job.status === 'failed' || !job.result) {
+      setPulsePreviewError(job.error || '重建索引失敗。');
+      showToast('產生結果', job.error || '重建索引失敗。', 'error');
+      return;
+    }
+    openPulsePreview({
+      ok: job.result.ok,
+      schedule_id: scheduleId,
+      repo_id: '',
+      date: job.result.date,
+      issue_count: job.result.issue_count,
+      title: job.result.title,
+      message: job.result.message,
+      index_built_at: null,
+      mode: job.result.mode,
+      generated_at: job.result.generated_at,
+      requested_model: job.result.requested_model,
+      model: job.result.model,
+    });
+  } catch (err) {
+    if (controller.signal.aborted) return;
+    const message = err instanceof Error ? err.message : '產生失敗。';
+    setPulsePreviewError(message);
+    showToast('產生結果', message, 'error');
+  } finally {
+    if (pulsePreviewAbort === controller) {
+      pulsePreviewAbort = null;
+    }
+  }
+}
+
+async function sendPulseNow(scheduleId: string): Promise<void> {
+  if (!scheduleId) {
+    showToast('立即發送', '請先儲存任務再發送。', 'warn');
+    return;
+  }
+  // Immediate feedback in the row — the request runs the LLM (and possibly a
+  // full reindex) before returning.
+  setPulseRowBusy(scheduleId, '產生並發送中…');
+  const res = await api<{
+    ok?: boolean;
+    message?: string;
+    job_id?: string;
+  }>(`/api/project-pulse/schedules/${scheduleId}/send-now`, 'POST', {});
+
+  if (!res.job_id) {
+    showToast('立即發送', res.message || '已送出', res.ok ? 'success' : 'error');
+    await loadPulse();
+    await loadPulseHistory();
+    return;
+  }
+
+  // Async rebuild-then-send: close the form (if open) so the row's progress is
+  // visible, then poll. The webhook only fires after the rebuild completes.
+  closePulseForm();
+  showToast('立即發送', '已開始重建索引，完成後才會發送到 Teams。', 'success');
+  const job = await pollPulseJob(res.job_id, (j) => {
+    setPulseRowBusy(scheduleId, pulsePhaseLabel(j));
+  });
+  if (job.status === 'failed' || !job.result) {
+    showToast('立即發送', job.error || '處理失敗。', 'error');
+  } else {
+    const sentOk = job.result.sent_ok;
+    showToast(
+      '立即發送',
+      sentOk ? '報告已發送到 Teams。' : job.result.sent_error || '發送失敗。',
+      sentOk ? 'success' : 'error',
+    );
+  }
+  await loadPulse();
+  await loadPulseHistory();
+}
+
+async function testPulseWebhook(scheduleId: string): Promise<void> {
+  if (!scheduleId) {
+    showToast('測試 Webhook', '請先儲存任務再測試 Webhook。', 'warn');
+    return;
+  }
+  const result = await api<{ ok: boolean; message: string }>(
+    `/api/project-pulse/schedules/${scheduleId}/test-webhook`,
+    'POST',
+    {},
+  );
+  showToast('測試 Webhook', result.message, result.ok ? 'success' : 'error');
+  await loadPulseHistory();
+}
+
+function pulsePayloadFrom(
+  schedule: PulseSchedule,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    enabled: schedule.enabled,
+    repo_id: schedule.repo_id,
+    repo_name: schedule.repo_name,
+    provider: schedule.provider,
+    name: schedule.name,
+    report_type: schedule.report_type,
+    custom_instruction: schedule.custom_instruction,
+    send_time: schedule.send_time,
+    timezone: schedule.timezone,
+    workdays: schedule.workdays,
+    channel_type: 'teams-webhook',
+    teams_webhook_url: '', // keep the stored webhook
+    clear_teams_webhook_url: false,
+    updated_issue_window: schedule.updated_issue_window,
+    issue_state: schedule.issue_state,
+    labels: schedule.labels,
+    assignees: schedule.assignees,
+    include_risks: schedule.include_risks,
+    include_next_steps: schedule.include_next_steps,
+    include_source_links: schedule.include_source_links,
+    rebuild_index_before_send: schedule.rebuild_index_before_send,
+    ...overrides,
+  };
+}
+
+async function togglePulseSchedule(schedule: PulseSchedule): Promise<void> {
+  await api<PulseSchedule>(
+    `/api/project-pulse/schedules/${schedule.id}`,
+    'PUT',
+    pulsePayloadFrom(schedule, { enabled: !schedule.enabled }),
+  );
+  showToast('專案脈搏', schedule.enabled ? '任務已暫停' : '任務已啟用', 'success');
+  await loadPulse();
+}
+
+async function deletePulseSchedule(schedule: PulseSchedule): Promise<void> {
+  if (!window.confirm(`確定要刪除報告任務「${schedule.name}」？`)) return;
+  await api<{ ok: boolean }>(`/api/project-pulse/schedules/${schedule.id}`, 'DELETE');
+  showToast('專案脈搏', '報告任務已刪除', 'success');
+  await loadPulse();
+}
+
+async function copyPulseReport(): Promise<void> {
+  const output = getById<HTMLTextAreaElement>('pulse-preview-output');
+  if (!output || !output.value) return;
+  try {
+    await navigator.clipboard.writeText(output.value);
+    showToast('複製報告', '已複製到剪貼簿', 'success');
+  } catch {
+    output.select();
+    document.execCommand('copy');
+    showToast('複製報告', '已複製到剪貼簿', 'success');
+  }
+}
+
+function handlePulseRowAction(event: Event): void {
+  const target = event.target as HTMLElement;
+  const button = target.closest<HTMLButtonElement>('[data-pulse-action]');
+  if (!button) return;
+  const row = button.closest<HTMLElement>('[data-pulse-id]');
+  const id = row?.dataset.pulseId || '';
+  const schedule = pulseSchedules.find((s) => s.id === id);
+  if (!schedule) return;
+  const action = button.dataset.pulseAction;
+  if (action === 'edit') openPulseForm(schedule);
+  else if (action === 'preview') void previewPulse(id).catch(handleError);
+  else if (action === 'send') void sendPulseNow(id).catch(handleError);
+  else if (action === 'test') void testPulseWebhook(id).catch(handleError);
+  else if (action === 'toggle') void togglePulseSchedule(schedule).catch(handleError);
+  else if (action === 'delete') void deletePulseSchedule(schedule).catch(handleError);
+}
+
+async function loadPulseHistory(): Promise<void> {
+  const container = getById<HTMLElement>('pulse-history');
+  if (!container) return;
+  const data = await api<{ items: PulseHistoryItem[] }>('/api/project-pulse/history');
+  const items = data.items || [];
+  if (!items.length) {
+    container.innerHTML = '<div class="briefing-history-empty">尚無執行紀錄。</div>';
+    return;
+  }
+  container.innerHTML = items
+    .map((item) => {
+      const when = fmtDate(item.finished_at || item.started_at);
+      const repo = item.repo_name || item.repo_id || '—';
+      const runType = pulseRunTypeLabel(item.run_type);
+      const detail = item.ok
+        ? `${repo}・${runType}・${item.issue_count} 件`
+        : `${repo}・${runType}・${escapeHtml(item.error_message || '失敗')}`;
+      return `
+        <div class="briefing-history-row">
+          <span class="dot ${item.ok ? 'ok' : 'fail'}"></span>
+          <span>${escapeHtml(when)}</span>
+          <span class="meta">${escapeHtml(detail)}</span>
+        </div>`;
+    })
+    .join('');
+}
+
+async function loadProjectPulseView(): Promise<void> {
+  await loadPulseRepos().catch(() => {
+    pulseRepos = [];
+  });
+  await loadPulse();
+  await loadPulseHistory();
+}
+
 async function loadAllIssues(): Promise<void> {
   const issues = await api<IssueItem[]>('/api/issues');
   state.allIssues = issues;
@@ -5476,30 +6555,62 @@ function initColumnResize(): void {
    ══════════════════════════════════════════════ */
 const chatHistory: { role: string; content: string }[] = [];
 
+// The chat lives in a single DOM node (#chat-surface) that is physically moved
+// between the floating dock and the full assistant page, so the conversation and
+// all listeners persist across both surfaces with no duplicated markup.
+function mountChatSurfaceTo(containerId: string): void {
+  const surface = document.getElementById('chat-surface');
+  const container = document.getElementById(containerId);
+  if (surface && container && surface.parentElement !== container) {
+    container.appendChild(surface);
+  }
+}
+
+function updateChatLauncherVisibility(): void {
+  const hidden = state.currentView === 'assistant' || state.chatDockOpen;
+  getById<HTMLElement>('chat-fab')?.classList.toggle('hidden', hidden);
+}
+
+function openChatDock(): void {
+  mountChatSurfaceTo('chat-dock-body');
+  getById<HTMLElement>('chat-dock')?.classList.add('open');
+  state.chatDockOpen = true;
+  updateChatLauncherVisibility();
+  renderRagStatusBadge();
+  renderRagQuestionState();
+  const input = getById<HTMLInputElement>('chat-input');
+  if (input && !input.disabled) {
+    window.setTimeout(() => input.focus(), 0);
+  }
+}
+
+function closeChatDock(): void {
+  mountChatSurfaceTo('assistant-mount');
+  getById<HTMLElement>('chat-dock')?.classList.remove('open');
+  state.chatDockOpen = false;
+  updateChatLauncherVisibility();
+  renderRagStatusBadge();
+}
+
+function expandChatToPage(): void {
+  // Reclaim the surface into the page, then switch to the assistant view.
+  getById<HTMLElement>('chat-dock')?.classList.remove('open');
+  state.chatDockOpen = false;
+  setActiveView('assistant');
+}
+
 function initChat(): void {
   const fab = document.getElementById('chat-fab');
-  const panel = document.getElementById('chat-panel');
-  const closeBtn = document.getElementById('chat-close');
   const clearBtn = document.getElementById('chat-clear');
   const input = document.getElementById('chat-input') as HTMLInputElement | null;
   const sendBtn = document.getElementById('chat-send');
 
-  if (!fab || !panel || !closeBtn || !input || !sendBtn || !clearBtn) return;
+  if (!input || !sendBtn || !clearBtn) return;
 
-  fab.addEventListener('click', () => {
-    panel.classList.add('open');
-    fab.classList.add('hidden');
-    renderRagStatusBadge();
-    if (!input.disabled) {
-      input.focus();
-    }
-  });
-
-  closeBtn.addEventListener('click', () => {
-    panel.classList.remove('open');
-    fab.classList.remove('hidden');
-    renderRagStatusBadge();
-  });
+  // FAB opens the floating dock; the dock can expand into the full assistant page.
+  fab?.addEventListener('click', () => openChatDock());
+  document.getElementById('chat-expand')?.addEventListener('click', () => expandChatToPage());
+  document.getElementById('chat-dock-close')?.addEventListener('click', () => closeChatDock());
 
   clearBtn.addEventListener('click', () => {
     chatHistory.length = 0;
@@ -5529,6 +6640,18 @@ function initChat(): void {
     }
   });
 
+  const modeGroup = document.getElementById('chat-retrieval-mode');
+  if (modeGroup) {
+    modeGroup.querySelectorAll<HTMLButtonElement>('.chat-mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        updateRetrievalModePreference(
+          (btn.dataset.mode as RetrievalMode) || DEFAULT_RETRIEVAL_MODE,
+        );
+      });
+    });
+  }
+  syncRetrievalModeSegmented();
+
   const msgs = document.getElementById('chat-messages');
   if (msgs) wireSuggestionBtns(msgs);
   renderRagQuestionState();
@@ -5547,7 +6670,9 @@ function wireSuggestionBtns(container: HTMLElement): void {
 }
 
 function isRagQuestionLocked(): boolean {
-  return !state.ragUi.hasUsableIndex && !state.ragUi.rebuildFailedWithoutIndex;
+  // Never hard-lock the chat: without a usable index we still answer via the
+  // Issue-list fallback, so the user can always ask.
+  return false;
 }
 
 function getRagQuestionNotice(): {
@@ -5559,7 +6684,7 @@ function getRagQuestionNotice(): {
     return {
       tone: 'pending',
       title: '知識索引準備中',
-      body: '正在確認 RAG 索引狀態，稍後就能開始提問。',
+      body: '正在確認 RAG 索引狀態，你仍可直接提問。',
     };
   }
 
@@ -5567,17 +6692,19 @@ function getRagQuestionNotice(): {
     return {
       tone: 'fallback',
       title: '索引暫時不可用',
-      body: '你仍可先提問，系統會先改用 Issue 清單回答。',
+      body: '目前使用 Issue 清單模式，留言索引建立後會更準。',
     };
   }
 
   if (!state.ragUi.hasUsableIndex) {
     return {
-      tone: 'pending',
-      title: state.ragUi.rebuilding ? '正在建立知識索引' : '知識索引準備中',
+      tone: 'fallback',
+      title: state.ragUi.rebuilding ? '正在建立知識索引' : '尚未建立留言索引',
       body: state.ragUi.rebuilding
-        ? `完成後即可提問，目前進度 ${Math.round(state.ragUi.rebuildProgress)}%。`
-        : '正在準備首次索引，完成後即可開始提問。',
+        ? `目前使用 Issue 清單模式回答，待索引完成後（${Math.round(
+            state.ragUi.rebuildProgress,
+          )}%）會包含更多 Issue 細節，回答會更準確。`
+        : '目前使用 Issue 清單模式，留言索引建立後會更準。',
     };
   }
 
@@ -5593,7 +6720,7 @@ function getRagQuestionNotice(): {
 }
 
 function renderRagQuestionState(): void {
-  const panel = getById<HTMLElement>('chat-panel');
+  const panel = getById<HTMLElement>('chat-surface');
   const notice = getById<HTMLElement>('chat-rag-state');
   const input = getById<HTMLInputElement>('chat-input');
   const sendBtn = getById<HTMLButtonElement>('chat-send');
@@ -5603,7 +6730,7 @@ function renderRagQuestionState(): void {
   const hint = getRagQuestionNotice();
   const isSending = sendBtn.dataset.busy === 'true';
 
-  panel.classList.toggle('chat-panel-rag-locked', locked);
+  panel.classList.toggle('chat-surface-rag-locked', locked);
   notice.className = hint ? `chat-rag-state ${hint.tone} is-visible` : 'chat-rag-state';
   notice.innerHTML = hint
     ? `
@@ -5614,7 +6741,7 @@ function renderRagQuestionState(): void {
     : '';
 
   input.disabled = locked;
-  input.placeholder = locked ? 'RAG 索引建立完成後即可提問' : '想問哪一筆 Issue、風險或進度？';
+  input.placeholder = locked ? '知識索引建立完成後即可提問' : '想問哪一筆 Issue、風險或進度？';
   sendBtn.disabled = locked || isSending;
 
   panel.querySelectorAll<HTMLButtonElement>('.chat-suggestion-btn').forEach((btn) => {
@@ -5626,6 +6753,30 @@ function renderRagQuestionState(): void {
   }
 }
 
+function chatSourceTypeLabel(sourceType: string): string {
+  switch (sourceType) {
+    case 'discussion':
+      return '留言';
+    case 'related_change':
+      return 'MR';
+    case 'issue_link':
+      return '關聯';
+    default:
+      return '';
+  }
+}
+
+// When the model answers that it can't conclude from the retrieved Sources
+// (insufficient info / out-of-scope), the source chips are misleading: they
+// imply those issues backed an answer that was never actually given. Detect
+// those replies so we can suppress the "來源依據" block for them.
+const INCONCLUSIVE_ANSWER_RE =
+  /資訊不足|資料不足|內容不足|無法得知|無法回答|無法判斷|無法回應|找不到(相關|對應)|沒有(相關|足夠)|不足以(完整)?判斷|只(能|負責).{0,6}Issue/;
+
+function isInconclusiveAnswer(answer?: string): boolean {
+  return INCONCLUSIVE_ANSWER_RE.test(answer || '');
+}
+
 function renderChatSources(sources?: ChatSource[]): string {
   if (!sources?.length) return '';
 
@@ -5634,6 +6785,8 @@ function renderChatSources(sources?: ChatSource[]): string {
     .map((source, index) => {
       const discussionId = source.discussion_id ? String(source.discussion_id) : '';
       const noteIds = JSON.stringify(source.note_ids || []);
+      const webUrl = source.web_url ? String(source.web_url) : '';
+      const typeLabel = chatSourceTypeLabel(source.source_type);
       return `
         <button
           class="chat-source-ref"
@@ -5641,10 +6794,12 @@ function renderChatSources(sources?: ChatSource[]): string {
           data-iid="${source.issue_iid}"
           data-discussion-id="${escapeHtml(discussionId)}"
           data-note-ids='${escapeHtml(noteIds)}'
+          data-url="${escapeHtml(webUrl)}"
           title="${escapeHtml(source.title || '')}"
-          style="margin-right:6px;margin-top:6px; !"
         >
-          #${source.issue_iid}${source.source_type === 'discussion' ? ' 留言' : ''}${index + 1}
+          <span class="chat-source-num">${index + 1}</span>
+          <span class="chat-source-id">#${source.issue_iid}</span>
+          ${typeLabel ? `<span class="chat-source-type">${typeLabel}</span>` : ''}
         </button>`;
     })
     .join('');
@@ -5692,17 +6847,31 @@ async function sendChatMessage(input: HTMLInputElement): Promise<void> {
       model_candidates: CHAT_RAG_GEMINI_MODEL_LIST,
       use_rag: true,
       top_k: 6,
+      retrieval_mode: state.uiPreferences.retrievalMode,
     });
 
     chatHistory.push({ role: 'assistant', content: result.answer });
     typingEl.remove();
 
+    const isContextTrace = result.retrieval_mode === 'context-trace';
+    const formattedAnswer = isContextTrace
+      ? formatContextTraceAnswer(result.answer)
+      : formatChatAnswer(result.answer);
+
+    // For a fast-rag/issue-list reply that concludes "資訊不足"/out-of-scope, the
+    // retrieved chunks didn't actually support an answer, so drop the chips.
+    // Context-trace keeps them: its sections can be partially inconclusive while
+    // the full issue context shown is still genuinely relevant.
+    const sources =
+      !isContextTrace && isInconclusiveAnswer(result.answer) ? undefined : result.sources;
+
     appendChatMsg(
       msgs,
       'assistant',
-      formatChatAnswer(result.answer),
+      formattedAnswer,
       result.model,
-      result.sources,
+      sources,
+      result.retrieval_mode,
       requestedModel,
     );
   } catch (err: any) {
@@ -5728,21 +6897,29 @@ function appendChatMsg(
   html: string,
   model?: string,
   sources?: ChatSource[],
+  retrievalMode?: ResolvedRetrievalMode,
   requestedModel?: string,
 ): void {
   const el = document.createElement('div');
   el.className = `chat-msg ${role}`;
 
-  let metaHtml = '';
+  const modeLabel = retrievalMode ? RETRIEVAL_MODE_LABELS[retrievalMode] : '';
+  let modelLabel = '';
+  let isFallback = false;
   if (model) {
     if (requestedModel && requestedModel !== model) {
-      metaHtml =
-        `<div class="chat-msg-meta chat-msg-fallback" title="原選模型過載或限流，已自動改用可用模型">` +
-        `⚠ 已自動切換：${escapeHtml(requestedModel)} → ${escapeHtml(model)}</div>`;
+      isFallback = true;
+      modelLabel = `已自動切換：${escapeHtml(requestedModel)} → ${escapeHtml(model)}`;
     } else {
-      metaHtml = `<div class="chat-msg-meta">${escapeHtml(model)}</div>`;
+      modelLabel = escapeHtml(model);
     }
   }
+  const metaParts = [modeLabel ? `使用模式：${modeLabel}` : '', modelLabel].filter(Boolean);
+  const metaClass = isFallback ? 'chat-msg-meta chat-msg-fallback' : 'chat-msg-meta';
+  const metaTitle = isFallback ? ' title="原選模型過載或限流，已自動改用可用模型"' : '';
+  const metaHtml = metaParts.length
+    ? `<div class="${metaClass}"${metaTitle}>${metaParts.join(' · ')}</div>`
+    : '';
   const sourcesHtml = renderChatSources(sources);
 
   el.innerHTML = `<div class="chat-msg-content">${html}${sourcesHtml}</div>${metaHtml}`;
@@ -5791,33 +6968,192 @@ function appendChatMsg(
     });
   });
 
+  el.querySelectorAll<HTMLButtonElement>('.chat-copy-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const markdown = decodeURIComponent(btn.dataset.copy || '');
+      if (!markdown) return;
+      try {
+        await navigator.clipboard.writeText(markdown);
+      } catch {
+        // Clipboard API can fail without focus/permission; fall back to a textarea.
+        const ta = document.createElement('textarea');
+        ta.value = markdown;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+      const label = btn.querySelector('.chat-copy-label');
+      if (label) {
+        const original = label.textContent;
+        label.textContent = '已複製';
+        btn.classList.add('is-copied');
+        window.setTimeout(() => {
+          label.textContent = original;
+          btn.classList.remove('is-copied');
+        }, 1600);
+      }
+    });
+  });
+
   container.appendChild(el);
   container.scrollTop = container.scrollHeight;
 }
 
 function formatChatAnswer(text: string): string {
-  // Convert markdown to HTML
+  // Models often emit numbered lists inline ("1. … 2. … 3. …") in one paragraph.
+  // Put each item on its own line so the list formatting below can pick it up.
+  // The lookbehind for a non-"." char avoids splitting version numbers like 2.0.0.
   let html = text
+    .replace(/\r\n/g, '\n')
+    .replace(/(^|[^\d.])\s*(\d{1,2})\.\s+(?=\S)/g, '$1\n$2. ')
+    .replace(/\s+[•●]\s+(?=\S)/g, '\n- ')
+    .replace(/^\s*[•●]\s+/gm, '- ');
+
+  // Convert markdown to HTML
+  html = html
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/^### (.+)$/gm, '<h4>$1</h4>')
     .replace(/^## (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/^- (.+)$/gm, '<li class="chat-subitem">$1</li>')
     .replace(/^(\d+)\. (.+)$/gm, '<li><strong>$1.</strong> $2</li>')
     .replace(/(<li>.*<\/li>\n?)+/g, (match) => `<ul>${match}</ul>`)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\n{2,}/g, '<br/><br/>')
     .replace(/\n/g, '<br/>');
 
-  // Convert #123 issue references to clickable links
-  html = html.replace(/#(\d+)/g, (_match, iid) => {
+  return linkifyIssueRefs(html);
+}
+
+// Convert #123 issue references into clickable buttons (shared by all renderers).
+function linkifyIssueRefs(html: string): string {
+  return html.replace(/#(\d+)/g, (_match, iid) => {
     const issue = state.allIssues.find((i) => i.iid === Number(iid));
     if (issue) {
       return `<button type="button" class="issue-ref" data-iid="${iid}" title="查看 ${escapeHtml(issue.title)}">#${iid}</button>`;
     }
     return `#${iid}`;
   });
+}
 
+// Context Trace answers carry fixed sections. Render "## 時間線" as a node/line
+// timeline and "## 建議下一步" as an interactive checklist with a copy-as-Markdown
+// button; format every other section normally.
+function formatContextTraceAnswer(text: string): string {
+  let working = text;
+  const fragments: Array<[string, string]> = [];
+
+  // Timeline: keep the heading, swap the body for a node/line timeline.
+  const timelineRe = /##\s*時間線\s*\n([\s\S]*?)(?=\n##\s|$)/;
+  const timelineMatch = working.match(timelineRe);
+  if (timelineMatch) {
+    const ph = '@@CHAT_TIMELINE@@';
+    fragments.push([ph, renderChatTimeline(timelineMatch[1])]);
+    working = working.replace(timelineRe, `## 時間線\n${ph}`);
+  }
+
+  // Next steps: replace the whole section (heading + body) with a checklist block.
+  const nextRe = /##\s*建議下一步\s*\n([\s\S]*?)(?=\n##\s|$)/;
+  const nextMatch = working.match(nextRe);
+  if (nextMatch) {
+    const ph = '@@CHAT_CHECKLIST@@';
+    fragments.push([ph, renderChecklistBlock('建議下一步', nextMatch[1])]);
+    working = working.replace(nextRe, ph);
+  }
+
+  let html = formatChatAnswer(working);
+  for (const [ph, fragment] of fragments) {
+    html = html.replace(ph, fragment);
+  }
   return html;
+}
+
+// Render a "## 建議下一步" section as a tickable checklist plus a button that
+// copies the items as a Markdown task list (paste-ready into a GitLab/GitHub issue).
+function renderChecklistBlock(title: string, body: string): string {
+  const entries = body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[-*]\s+/.test(line))
+    .map((line) =>
+      line
+        .replace(/^[-*]\s+/, '')
+        .replace(/^\[[ xX]\]\s*/, '')
+        .trim(),
+    )
+    .filter(Boolean);
+
+  if (!entries.length) {
+    return `<h3>${escapeHtml(title)}</h3>${formatChatAnswer(body)}`;
+  }
+
+  const items = entries
+    .map(
+      (entry) =>
+        `<label class="chat-check-item"><input type="checkbox" class="chat-check-box" /><span class="chat-check-text">${linkifyIssueRefs(
+          escapeHtml(entry),
+        )}</span></label>`,
+    )
+    .join('');
+
+  const markdown = entries.map((entry) => `- [ ] ${entry}`).join('\n');
+  const copyData = encodeURIComponent(markdown);
+
+  return `
+    <div class="chat-checklist-block">
+      <div class="chat-checklist-head">
+        <h3>${escapeHtml(title)}</h3>
+        <button
+          type="button"
+          class="chat-copy-btn"
+          data-copy="${copyData}"
+          title="複製為 Markdown 清單"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          <span class="chat-copy-label">複製 Markdown</span>
+        </button>
+      </div>
+      <div class="chat-checklist">${items}</div>
+    </div>`;
+}
+
+function renderChatTimeline(body: string): string {
+  const entries = body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^[-*]\s+/.test(line))
+    .map((line) => line.replace(/^[-*]\s+/, ''));
+
+  if (!entries.length) {
+    // No parseable bullet entries: fall back to normal formatting.
+    return formatChatAnswer(body);
+  }
+
+  const items = entries
+    .map((entry) => {
+      // Expected shape: "日期｜事件描述（#IID）"; tolerate other delimiters.
+      const parts = entry.split(/[｜|]/);
+      const hasDate = parts.length >= 2;
+      const date = hasDate ? parts[0].trim() : '';
+      const rawText = hasDate ? parts.slice(1).join('｜').trim() : entry.trim();
+      const dateHtml = date
+        ? `<span class="chat-timeline-date">${linkifyIssueRefs(escapeHtml(date))}</span>`
+        : '';
+      const textHtml = linkifyIssueRefs(escapeHtml(rawText));
+      return `
+        <li class="chat-timeline-item">
+          <span class="chat-timeline-node" aria-hidden="true"></span>
+          <div class="chat-timeline-body">
+            ${dateHtml}
+            <span class="chat-timeline-text">${textHtml}</span>
+          </div>
+        </li>`;
+    })
+    .join('');
+
+  return `<ol class="chat-timeline">${items}</ol>`;
 }
 
 let ragPollTimer: number | null = null;
@@ -5836,8 +7172,9 @@ function ensureRagStatusBadge(): HTMLElement {
 
 function renderRagStatusBadge(): void {
   const badge = ensureRagStatusBadge();
-  const chatPanel = getById<HTMLElement>('chat-panel');
-  const hideForOpenChat = Boolean(chatPanel?.classList.contains('open'));
+  // The assistant view and the floating dock both show rebuild status inline,
+  // so the separate floating badge is redundant while either is open.
+  const hideForOpenChat = state.currentView === 'assistant' || state.chatDockOpen;
 
   if (hideForOpenChat || (!state.ragUi.rebuilding && !state.ragUi.rebuildStatusText)) {
     badge.className = 'rag-status-badge';
@@ -6074,6 +7411,54 @@ function wireEvents(): void {
   bind<HTMLButtonElement>('btn-test-connection', 'click', () =>
     testActiveConnection().catch(handleError),
   );
+  // Project Pulse (專案脈搏)
+  bind<HTMLButtonElement>('pulse-new', 'click', () => openPulseForm(null));
+  bind<HTMLButtonElement>('pulse-form-close', 'click', () => closePulseForm());
+  bind<HTMLButtonElement>('pulse-form-save', 'click', () =>
+    runWithButtonBusy('pulse-form-save', '儲存中…', savePulseForm).catch(handleError),
+  );
+  bind<HTMLButtonElement>('pulse-form-restore', 'click', () => restorePulseDefaultInstruction());
+  bind<HTMLButtonElement>('pulse-form-preview', 'click', () =>
+    runWithButtonBusy('pulse-form-preview', '產生中…', () =>
+      previewPulse(currentPulseFormId()),
+    ).catch(handleError),
+  );
+  bind<HTMLButtonElement>('pulse-form-send', 'click', () =>
+    runWithButtonBusy('pulse-form-send', '發送中…', () => sendPulseNow(currentPulseFormId())).catch(
+      handleError,
+    ),
+  );
+  bind<HTMLButtonElement>('pulse-form-test', 'click', () =>
+    runWithButtonBusy('pulse-form-test', '測試中…', () =>
+      testPulseWebhook(currentPulseFormId()),
+    ).catch(handleError),
+  );
+  bind<HTMLSelectElement>('pulse-form-type', 'change', (event) => {
+    // Bringing in the new type's default instruction only when the box is empty
+    // or still holds another type's default avoids clobbering custom edits.
+    const textarea = getById<HTMLTextAreaElement>('pulse-form-instruction');
+    if (!textarea) return;
+    const current = textarea.value.trim();
+    const isDefault =
+      current === '' ||
+      current === PULSE_LEGACY_DAILY_INSTRUCTION ||
+      Object.values(PULSE_DEFAULT_INSTRUCTIONS).some((value) => value === current);
+    if (isDefault) {
+      textarea.value = pulseDefaultInstruction((event.currentTarget as HTMLSelectElement).value);
+    }
+  });
+  bind<HTMLButtonElement>('pulse-preview-close', 'click', () => closePulsePreview());
+  bind<HTMLButtonElement>('pulse-preview-copy', 'click', () =>
+    copyPulseReport().catch(handleError),
+  );
+  bind<HTMLButtonElement>('pulse-history-refresh', 'click', () =>
+    loadPulseHistory().catch(handleError),
+  );
+  getById<HTMLAnchorElement>('pulse-webhook-guide')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    void window.trackerBridge.openPath('https://make.powerautomate.com/');
+  });
+  getById<HTMLElement>('pulse-rows')?.addEventListener('click', handlePulseRowAction);
   bind<HTMLSelectElement>('active-provider', 'change', (event) =>
     switchActiveProvider((event.currentTarget as HTMLSelectElement).value as 'gitlab' | 'github'),
   );

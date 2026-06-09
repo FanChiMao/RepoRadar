@@ -112,6 +112,17 @@ data/
 
 RAG index 必須與目前 Issue cache 使用相同來源。切換 provider/repository 或清除 Issue cache 時，一併清除 RAG。
 
+## AI 排程
+
+AI 排程使用 backend-only JSON 檔保存任務與歷史：
+
+- `ai_report_schedules.json`：AI 排程設定。包含 repo binding、整理類型、preferred model、發送時間、工作日、filter、Teams Webhook URL 與 `rebuild_index_before_send`。
+- `ai_report_history.json`：執行歷史。保存 schedule/repo/report type/run type、issue count、成功狀態、錯誤訊息、index 時間與 started/finished 時間；不得保存 Teams Webhook URL。
+- `project_pulse_jobs.json`：preview 或需要重建 index 的 background job 狀態，包含 `phase`、`progress`、`result` 與 `error`。
+- `repos.json` 與 per-repo snapshot/index：記錄可被 AI 排程綁定的 repo，並保存該 repo 的 Issue cache 與 RAG index。
+
+Frontend 只接收 masked webhook 狀態：`has_teams_webhook_url` 與 `teams_webhook_url_masked`。完整 URL 不得回傳前端，也不得寫入 history。
+
 ## Meta
 
 `meta.json` 保存 `last_sync`、`last_report`、`latest_report_path` 與 `scheduler` 同日去重狀態，不保存業務內容。

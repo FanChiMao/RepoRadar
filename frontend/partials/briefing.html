@@ -1,0 +1,351 @@
+<section id="view-briefing" class="workspace-view">
+  <section class="page-hero">
+    <div>
+      <div class="view-eyebrow">Views / AI Schedule</div>
+      <h2 class="view-title">AI 排程</h2>
+      <p class="view-subtitle">
+        定期追蹤多個 Repo 的 Issue 更新、風險與自訂 AI 整理結果，並推送到 Teams。
+      </p>
+    </div>
+  </section>
+
+  <!-- Summary cards -->
+  <section id="pulse-summary" class="pulse-summary">
+    <div class="pulse-card">
+      <span class="pulse-card-icon pulse-icon-ok" aria-hidden="true">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="9" />
+          <path d="m8.5 12 2.5 2.5 4.5-5" />
+        </svg>
+      </span>
+      <div class="pulse-card-body">
+        <span id="pulse-summary-enabled" class="pulse-card-value">0</span>
+        <span class="pulse-card-label">啟用中的任務</span>
+      </div>
+    </div>
+    <div class="pulse-card">
+      <span class="pulse-card-icon pulse-icon-info" aria-hidden="true">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </svg>
+      </span>
+      <div class="pulse-card-body">
+        <span id="pulse-summary-next" class="pulse-card-value">—</span>
+        <span class="pulse-card-label">下一次發送</span>
+      </div>
+    </div>
+    <div class="pulse-card">
+      <span class="pulse-card-icon pulse-icon-fail" aria-hidden="true">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 4 21 19H3z" />
+          <path d="M12 10v4" />
+          <path d="M12 17h.01" />
+        </svg>
+      </span>
+      <div class="pulse-card-body">
+        <span id="pulse-summary-failures" class="pulse-card-value">0</span>
+        <span class="pulse-card-label">最近失敗</span>
+      </div>
+    </div>
+    <div class="pulse-card">
+      <span class="pulse-card-icon pulse-icon-info" aria-hidden="true">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <circle cx="6" cy="6" r="2.5" />
+          <circle cx="6" cy="18" r="2.5" />
+          <circle cx="18" cy="8" r="2.5" />
+          <path d="M6 8.5v7" />
+          <path d="M18 10.5a6 6 0 0 1-6 6H8.5" />
+        </svg>
+      </span>
+      <div class="pulse-card-body">
+        <span id="pulse-summary-repos" class="pulse-card-value">0</span>
+        <span class="pulse-card-label">監控 Repo</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Schedule list -->
+  <section class="panel pulse-panel">
+    <div class="section-title-row">
+      <h2>AI 排程</h2>
+      <button id="pulse-new" class="primary-btn">＋ 新增 AI 排程</button>
+    </div>
+    <p class="preference-hint">
+      每個 AI 排程綁定一個 Repo、各自的 Teams Webhook、發送時間與整理指令。
+      勾選「發送前完整重建知識索引」的任務會重建索引（顯示進度，完成後才發送）。
+    </p>
+
+    <div class="pulse-table-wrap">
+      <table class="pulse-table">
+        <thead>
+          <tr>
+            <th>狀態</th>
+            <th>Repo</th>
+            <th>排程名稱</th>
+            <th>整理類型</th>
+            <th>發送時間</th>
+            <th>工作日</th>
+            <th>通知管道</th>
+            <th>上次執行</th>
+            <th>下次執行</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="pulse-rows">
+          <tr>
+            <td colspan="10" class="pulse-empty">尚無 AI 排程，按「新增 AI 排程」建立第一筆。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Create / Edit form modal -->
+  <div id="pulse-form-overlay" class="pulse-overlay" aria-hidden="true">
+    <div class="pulse-modal" role="dialog" aria-modal="true" aria-labelledby="pulse-form-title">
+      <div class="pulse-modal-header">
+        <h3 id="pulse-form-title">新增 AI 排程</h3>
+        <button id="pulse-form-close" class="ghost-btn pulse-close-btn" title="關閉">×</button>
+      </div>
+
+      <div class="pulse-modal-body">
+        <input id="pulse-form-id" type="hidden" />
+
+        <div class="pulse-section-label">基本</div>
+        <label class="pulse-toggle">
+          <input id="pulse-form-enabled" type="checkbox" checked />
+          <span class="pulse-toggle-track"><span class="pulse-toggle-thumb"></span></span>
+          <span class="pulse-toggle-label">啟用此任務</span>
+        </label>
+        <div class="pulse-grid">
+          <div class="briefing-field">
+            <label for="pulse-form-name">任務名稱</label>
+            <input id="pulse-form-name" type="text" placeholder="每日 Issue 摘要" />
+          </div>
+          <div class="briefing-field">
+            <label for="pulse-form-repo">Repo</label>
+            <select id="pulse-form-repo"></select>
+          </div>
+          <div class="briefing-field">
+            <label for="pulse-form-type">整理類型</label>
+            <select id="pulse-form-type">
+              <option value="daily-briefing">每日簡報</option>
+              <option value="custom-report">自訂報告</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="pulse-section-label">排程</div>
+        <div class="pulse-grid">
+          <div class="briefing-field">
+            <label for="pulse-form-send-time">發送時間</label>
+            <input id="pulse-form-send-time" type="time" value="18:30" />
+          </div>
+          <div class="briefing-field">
+            <label for="pulse-form-timezone">時區</label>
+            <select id="pulse-form-timezone">
+              <option value="Asia/Taipei">Asia/Taipei（台北 UTC+8）</option>
+              <option value="Asia/Shanghai">Asia/Shanghai（北京 UTC+8）</option>
+              <option value="Asia/Hong_Kong">Asia/Hong_Kong（香港 UTC+8）</option>
+              <option value="Asia/Singapore">Asia/Singapore（新加坡 UTC+8）</option>
+              <option value="Asia/Tokyo">Asia/Tokyo（東京 UTC+9）</option>
+              <option value="Asia/Seoul">Asia/Seoul（首爾 UTC+9）</option>
+              <option value="UTC">UTC（世界協調時間）</option>
+              <option value="Europe/London">Europe/London（倫敦 UTC+0/+1）</option>
+              <option value="Europe/Berlin">Europe/Berlin（柏林 UTC+1/+2）</option>
+              <option value="America/New_York">America/New_York（紐約 UTC-5/-4）</option>
+              <option value="America/Los_Angeles">America/Los_Angeles（洛杉磯 UTC-8/-7）</option>
+              <option value="Australia/Sydney">Australia/Sydney（雪梨 UTC+10/+11）</option>
+            </select>
+          </div>
+        </div>
+        <div class="briefing-field">
+          <label>工作日</label>
+          <div id="pulse-form-workdays" class="briefing-workdays">
+            <label class="checkbox-row"
+              ><input type="checkbox" data-workday="1" /><span>一</span></label
+            >
+            <label class="checkbox-row"
+              ><input type="checkbox" data-workday="2" /><span>二</span></label
+            >
+            <label class="checkbox-row"
+              ><input type="checkbox" data-workday="3" /><span>三</span></label
+            >
+            <label class="checkbox-row"
+              ><input type="checkbox" data-workday="4" /><span>四</span></label
+            >
+            <label class="checkbox-row"
+              ><input type="checkbox" data-workday="5" /><span>五</span></label
+            >
+            <label class="checkbox-row"
+              ><input type="checkbox" data-workday="6" /><span>六</span></label
+            >
+            <label class="checkbox-row"
+              ><input type="checkbox" data-workday="7" /><span>日</span></label
+            >
+          </div>
+        </div>
+        <label class="checkbox-row pulse-enable-row">
+          <input id="pulse-form-rebuild" type="checkbox" />
+          <span>發送前完整重建知識索引（內容最新，但較慢；會顯示處理進度）</span>
+        </label>
+
+        <div class="pulse-section-label">通知</div>
+        <div class="briefing-field">
+          <label for="pulse-form-channel">通知管道</label>
+          <select id="pulse-form-channel" disabled>
+            <option value="teams-webhook">Teams Webhook</option>
+          </select>
+        </div>
+        <div class="briefing-field">
+          <label for="pulse-form-webhook">Teams Webhook URL</label>
+          <p class="field-hint">
+            請先到
+            <a id="pulse-webhook-guide" href="#">Power Automate</a>
+            （我的流程 → 新增流程）建立工作流，取得 Webhook URL 後貼到下方。
+          </p>
+          <input
+            id="pulse-form-webhook"
+            type="text"
+            autocomplete="off"
+            placeholder="https://default301f...（已設定時留空表示不變）"
+          />
+          <div class="briefing-inline">
+            <span id="pulse-form-webhook-status" class="field-hint">尚未設定</span>
+            <label class="checkbox-row">
+              <input id="pulse-form-webhook-clear" type="checkbox" />
+              <span>清除已儲存的 URL</span>
+            </label>
+            <button id="pulse-form-test" class="ghost-btn" type="button">測試 Webhook</button>
+          </div>
+        </div>
+
+        <div class="pulse-section-label">內容 / 篩選</div>
+        <div class="pulse-grid">
+          <div class="briefing-field">
+            <label for="pulse-form-window">更新時間範圍</label>
+            <select id="pulse-form-window">
+              <option value="today">今日</option>
+              <option value="since-last-run">上次執行後</option>
+              <option value="last-7-days">最近 7 天</option>
+            </select>
+          </div>
+          <div class="briefing-field">
+            <label for="pulse-form-state">Issue 狀態</label>
+            <select id="pulse-form-state">
+              <option value="all">全部</option>
+              <option value="open">開啟中</option>
+              <option value="closed">已關閉</option>
+            </select>
+          </div>
+        </div>
+        <div class="briefing-field">
+          <label>包含內容</label>
+          <div class="briefing-includes">
+            <label class="checkbox-row"
+              ><input id="pulse-form-risks" type="checkbox" checked /><span
+                >風險 / 阻塞</span
+              ></label
+            >
+            <label class="checkbox-row"
+              ><input id="pulse-form-next" type="checkbox" checked /><span>建議下一步</span></label
+            >
+            <label class="checkbox-row"
+              ><input id="pulse-form-links" type="checkbox" checked /><span>來源連結</span></label
+            >
+          </div>
+        </div>
+
+        <div class="pulse-section-label">AI 整理指令</div>
+        <div class="briefing-field">
+          <label for="pulse-form-model">自然語言模型</label>
+          <select id="pulse-form-model" title="選擇這筆 AI 排程產生結果時優先使用的模型"></select>
+          <p class="field-hint">若原選模型過載或限流，會自動切換到下一個可用模型。</p>
+        </div>
+        <div class="briefing-field">
+          <p class="field-hint">
+            描述你希望 AI
+            如何整理這份報告，例如：偏主管摘要、偏工程細節、只列風險、列出明日待辦。安全規則由系統固定，整理指令無法覆蓋。
+          </p>
+          <textarea
+            id="pulse-form-instruction"
+            class="arrange-textarea"
+            rows="5"
+            placeholder="依整理類型自動帶入預設整理指令…"
+          ></textarea>
+          <div class="briefing-inline">
+            <button id="pulse-form-restore" class="ghost-btn" type="button">
+              還原預設整理指令
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="pulse-modal-footer">
+        <button id="pulse-form-preview" class="secondary-btn" type="button">產生結果</button>
+        <button id="pulse-form-send" class="secondary-btn" type="button">立即發送</button>
+        <button id="pulse-form-save" class="primary-btn" type="button">儲存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preview modal -->
+  <div id="pulse-preview-overlay" class="pulse-overlay" aria-hidden="true">
+    <div
+      class="pulse-modal pulse-modal-narrow"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="pulse-preview-title"
+    >
+      <div class="pulse-modal-header">
+        <h3 id="pulse-preview-title">產生結果</h3>
+        <button id="pulse-preview-close" class="ghost-btn pulse-close-btn" title="關閉">×</button>
+      </div>
+      <div class="pulse-modal-body">
+        <p id="pulse-preview-meta" class="field-hint"></p>
+        <textarea id="pulse-preview-output" class="arrange-textarea" rows="16" readonly></textarea>
+      </div>
+      <div class="pulse-modal-footer">
+        <button id="pulse-preview-copy" class="secondary-btn" type="button">複製報告</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run history -->
+  <section class="panel pulse-panel">
+    <div class="section-title-row">
+      <h2>歷史執行紀錄</h2>
+      <button id="pulse-history-refresh" class="ghost-btn">重新整理</button>
+    </div>
+    <div id="pulse-history" class="briefing-history"></div>
+  </section>
+</section>

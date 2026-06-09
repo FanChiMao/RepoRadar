@@ -188,7 +188,7 @@ label,
   font-size: calc(13px * var(--font-scale));
 }
 
-body.detail-open .chat-panel.open {
+body.detail-open .chat-dock.open {
   right: 560px;
   width: 360px;
   max-width: calc(100vw - 608px);
@@ -203,7 +203,7 @@ body.detail-open .rag-status-badge {
 }
 
 @media (max-width: 1380px) {
-  body.detail-open .chat-panel.open {
+  body.detail-open .chat-dock.open {
     right: 548px;
     width: 320px;
     max-width: calc(100vw - 592px);
@@ -219,7 +219,7 @@ body.detail-open .rag-status-badge {
 }
 
 @media (max-width: 1180px) {
-  body.detail-open .chat-panel.open {
+  body.detail-open .chat-dock.open {
     left: 24px;
     right: auto;
     width: min(360px, calc(100vw - 96px));
