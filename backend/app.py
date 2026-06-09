@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from copy import deepcopy
 from contextlib import asynccontextmanager
@@ -23,6 +24,23 @@ from core.config_store import (
     public_config,
     save_config,
     save_meta,
+)
+from core.llm_providers import (
+    azure_model_names,
+    azure_protocol,
+    call_azure_anthropic,
+    call_azure_openai,
+    gemini_contents_to_messages,
+    is_azure_model,
+    is_vision_model,
+    pick_vision_model,
+)
+from core.image_fetch import (
+    ImageAsset,
+    download_images,
+    extract_image_urls,
+    project_web_base_from_issue_url,
+    resolve_image_url,
 )
 from core.gitlab_client import GitLabIssueClient
 from core.issue_arrange import (
@@ -131,6 +149,47 @@ DEFAULT_LLM_MODELS = [
     "gemma-4-31b-it",
     "gemma-4-26b-a4b-it",
 ]
+
+# 把啟用的 Azure 模型併入各 per-feature 清單，讓 build_model_chain 的 allowed 包含它們，
+# 並依模型名稱在各 LLM 函式內路由到對應 provider。
+_AZURE_LLM_NAMES = azure_model_names()
+if _AZURE_LLM_NAMES:
+    for _llm_list in (
+        CHAT_RAG_LLM_MODELS,
+        ARRANGE_LLM_MODELS,
+        DISCUSSION_SUMMARY_LLM_MODELS,
+        DEFAULT_LLM_MODELS,
+    ):
+        _llm_list.extend(name for name in _AZURE_LLM_NAMES if name not in _llm_list)
+
+
+def call_azure_model(
+    model: str,
+    system_instruction: str,
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.2,
+    images: list[ImageAsset] | None = None,
+    json_mode: bool = True,
+) -> str:
+    """依模型的 protocol 路由到對應的 Azure client，回傳模型輸出的純文字。"""
+    if azure_protocol(model) == "anthropic":
+        return call_azure_anthropic(
+            model=model,
+            system_instruction=system_instruction,
+            messages=messages,
+            images=images,
+        )
+    return call_azure_openai(
+        model=model,
+        system_instruction=system_instruction,
+        messages=messages,
+        temperature=temperature,
+        images=images,
+        json_mode=json_mode,
+    )
+
+
 DEFAULT_ISSUE_WORKSPACE_PROMPT = """
 你是一位資深技術 PM，請根據提供的 Issue 原始資料，整理成清楚、可追蹤的中文摘要。
 
@@ -289,6 +348,7 @@ def run_arrange_llm(
     system_prompt: str,
     preferred_model: str,
     model_candidates: list[str],
+    images: list[ImageAsset] | None = None,
 ) -> tuple[str, str]:
     prompt = (system_prompt or "").strip() or DEFAULT_ISSUE_WORKSPACE_PROMPT
     return call_gemini_json_text(
@@ -298,6 +358,7 @@ def run_arrange_llm(
         preferred_model=preferred_model or None,
         model_candidates=model_candidates,
         default_models=ARRANGE_LLM_MODELS,
+        images=images,
     )
 
 
@@ -336,14 +397,10 @@ def call_gemini_json_text(
     preferred_model: str | None = None,
     model_candidates: list[str] | None = None,
     default_models: list[str] | None = None,
+    images: list[ImageAsset] | None = None,
 ) -> tuple[str, str]:
     config = load_config()
     gemini_key = config.get("gemini_api_key", "")
-    if not gemini_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Please set Gemini API Key in connection settings first.",
-        )
 
     payload = {
         "systemInstruction": {"parts": [{"text": prompt}]},
@@ -366,13 +423,55 @@ def call_gemini_json_text(
         default_models=default_models or DEFAULT_LLM_MODELS,
     )
     for model in models:
+        if is_azure_model(model):
+            try:
+                azure_system = (
+                    f"{prompt}\n\n"
+                    f'請只輸出單一有效的 JSON 物件，格式為 {{"{response_field}": "..."}}，'
+                    "不要 markdown、不要 code block、不要任何多餘文字。"
+                )
+                raw_response = call_azure_model(
+                    model,
+                    azure_system,
+                    [{"role": "user", "text": raw_text}],
+                    temperature=temperature,
+                    images=images if is_vision_model(model) else None,
+                )
+                parsed = extract_json_object(raw_response)
+                value = str(parsed.get(response_field, "")).strip()
+                if not value:
+                    raise ValueError(f"Missing field: {response_field}")
+                return value, model
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+
+        if not gemini_key:
+            last_error = "Gemini API Key 未設定。"
+            continue
+
         gemini_url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={gemini_key}"
         )
+        req_payload = payload
+        if images and is_vision_model(model):
+            req_payload = json.loads(json.dumps(payload))  # deep copy（純文字內容）
+            parts = req_payload["contents"][0]["parts"]
+            parts.append({"text": "上文中的【圖片#k】依序對應以下附上的圖片。"})
+            for img in images:
+                if getattr(img, "ok", False) and img.data:
+                    parts.append(
+                        {
+                            "inline_data": {
+                                "mime_type": img.media_type,
+                                "data": img.base64_data(),
+                            }
+                        }
+                    )
         for _attempt in range(3):
             try:
-                response = requests.post(gemini_url, json=payload, timeout=90)
+                response = requests.post(gemini_url, json=req_payload, timeout=90)
                 if response.status_code == 429:
                     continue
                 response.raise_for_status()
@@ -402,7 +501,227 @@ def call_gemini_json_text(
                 last_error = str(exc)
                 break
 
-    raise HTTPException(status_code=502, detail=f"Gemini API failed: {last_error}")
+    raise HTTPException(status_code=502, detail=f"LLM API failed: {last_error}")
+
+
+# ── 留言圖片：擷取、轉描述、與 raw_text 串接 ──────────────────────────
+
+ARRANGE_IMAGE_DIR = ARRANGE_EXPORT_DIR / "images"
+
+
+def _arrange_image_limits() -> tuple[int, int]:
+    try:
+        max_count = int(os.environ.get("ARRANGE_IMAGE_MAX_COUNT", "6"))
+    except ValueError:
+        max_count = 6
+    try:
+        max_bytes = int(os.environ.get("ARRANGE_IMAGE_MAX_BYTES", str(4 * 1024 * 1024)))
+    except ValueError:
+        max_bytes = 4 * 1024 * 1024
+    return max(0, max_count), max_bytes
+
+
+def _replace_image_ref(body: str, ref: str, marker: str) -> str:
+    esc = re.escape(ref)
+    body = re.sub(
+        r"!\[[^\]]*\]\(\s*<?" + esc + r">?(?:\s+\"[^\"]*\")?\s*\)", marker, body
+    )
+    body = re.sub(r"<img\b[^>]*?\bsrc\s*=\s*[\"']" + esc + r"[\"'][^>]*>", marker, body)
+    return body
+
+
+def caption_image(model: str, asset: ImageAsset) -> str:
+    """用視覺模型把單張圖片轉成繁中描述（純文字）。"""
+    system = (
+        "你是視覺助理。請用繁體中文簡述圖片內容（30-80字）；"
+        "若含文字、錯誤訊息或數值請逐字保留。只輸出描述本身，不要前言。"
+    )
+    user = "請描述這張圖片。"
+    if is_azure_model(model):
+        return call_azure_model(
+            model,
+            system,
+            [{"role": "user", "text": user}],
+            images=[asset],
+            json_mode=False,
+        ).strip()
+
+    # Gemini 多模態（純文字輸出）
+    gemini_key = load_config().get("gemini_api_key", "")
+    if not gemini_key:
+        return ""
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={gemini_key}"
+    )
+    payload = {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [
+            {
+                "parts": [
+                    {"text": user},
+                    {
+                        "inline_data": {
+                            "mime_type": asset.media_type,
+                            "data": asset.base64_data(),
+                        }
+                    },
+                ]
+            }
+        ],
+    }
+    resp = requests.post(url, json=payload, timeout=60)
+    resp.raise_for_status()
+    candidates = resp.json().get("candidates", [])
+    if not candidates:
+        return ""
+    parts = candidates[0].get("content", {}).get("parts", [])
+    return "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
+
+
+def prepare_note_images(
+    client: Any, issue: dict[str, Any], discussions: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[ImageAsset]]:
+    """下載留言圖片、轉描述，回傳 (已把圖片 markdown 換成【圖片#k：描述】的 discussions, assets)。"""
+    web_url = issue.get("web_url")
+    project_web_base = project_web_base_from_issue_url(web_url)
+    base_url = getattr(client, "base_url", "") or getattr(client, "web_base_url", "")
+    provider_name = getattr(client, "provider_name", "")
+    project_ref = str(issue.get("source_ref") or "")
+
+    note_refs: list[tuple[dict[str, Any], list[str]]] = []
+    for disc in discussions:
+        for note in disc.get("notes", []):
+            if (note.get("body") or "").strip():
+                note_refs.append((note, extract_image_urls(note.get("body") or "")))
+
+    flat: list[tuple[int, str]] = []  # (note_position, ref)
+    resolved_urls: list[str] = []
+    for pos, (_note, refs) in enumerate(note_refs):
+        for ref in refs:
+            flat.append((pos, ref))
+            resolved_urls.append(
+                resolve_image_url(
+                    ref,
+                    provider_name=provider_name,
+                    base_url=base_url,
+                    project_ref=project_ref,
+                    project_web_base=project_web_base,
+                )
+            )
+
+    if not flat:
+        return discussions, []
+
+    max_count, max_bytes = _arrange_image_limits()
+    if max_count <= 0:
+        return discussions, []
+
+    issue_slug = f"{(issue.get('source_ref') or 'repo')}_{issue.get('iid')}".replace(
+        "/", "_"
+    )
+    dest_dir = ARRANGE_IMAGE_DIR / f"{issue_slug}_{utc_now().strftime('%Y%m%d_%H%M%S')}"
+    items = [(flat[i][0], resolved_urls[i]) for i in range(len(flat))]
+    assets = download_images(
+        client, items, dest_dir, max_count=max_count, max_bytes=max_bytes
+    )
+
+    # caption 成功的圖：依序嘗試多個視覺模型，第一個成功就用（Azure 較不受 Gemini 配額影響）
+    caption_candidates: list[str] = []
+    for name in [
+        os.environ.get("ARRANGE_VISION_MODEL", "").strip(),
+        *azure_model_names(),
+        *ARRANGE_LLM_MODELS,
+    ]:
+        if name and is_vision_model(name) and name not in caption_candidates:
+            caption_candidates.append(name)
+    for asset in assets:
+        if not asset.ok:
+            continue
+        for cap_model in caption_candidates:
+            try:
+                cap = caption_image(cap_model, asset)
+            except Exception:  # noqa: BLE001
+                continue
+            if cap:
+                asset.caption = cap
+                break
+
+    # 每則留言的 ref→marker
+    markers_per_pos: dict[int, dict[str, str]] = {}
+    for idx, (pos, ref) in enumerate(flat):
+        if idx < len(assets):
+            asset = assets[idx]
+            if asset.ok:
+                cap = f"：{asset.caption}" if asset.caption else ""
+                marker = f"【圖片#{asset.key}{cap}】"
+            else:
+                marker = f"【圖片#{asset.key}：下載失敗】"
+        else:
+            marker = "【圖片：超過數量上限，未處理】"
+        markers_per_pos.setdefault(pos, {})[ref] = marker
+
+    # 在 discussions 副本上替換
+    new_discussions = deepcopy(discussions)
+    new_notes: list[dict[str, Any]] = []
+    for disc in new_discussions:
+        for note in disc.get("notes", []):
+            if (note.get("body") or "").strip():
+                new_notes.append(note)
+    for pos, (_orig, _refs) in enumerate(note_refs):
+        if pos >= len(new_notes):
+            break
+        body = new_notes[pos].get("body") or ""
+        for ref, marker in markers_per_pos.get(pos, {}).items():
+            body = _replace_image_ref(body, ref, marker)
+        new_notes[pos]["body"] = body
+
+    return new_discussions, assets
+
+
+def load_arrange_images_for_url(url: str) -> list[ImageAsset]:
+    """供 /api/arrange/llm 兩步流程：依 issue url 重新載回最近一次下載的圖片。"""
+    try:
+        provider_name, base_url, project_ref, issue_iid = parse_issue_source_url(url)
+    except Exception:  # noqa: BLE001
+        return []
+    issue_slug = f"{project_ref}_{issue_iid}".replace("/", "_")
+    if not ARRANGE_IMAGE_DIR.exists():
+        return []
+    candidates = sorted(
+        (
+            d
+            for d in ARRANGE_IMAGE_DIR.iterdir()
+            if d.is_dir() and d.name.startswith(issue_slug + "_")
+        ),
+        key=lambda d: d.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return []
+    latest = candidates[0]
+    assets: list[ImageAsset] = []
+    key = 0
+    for img_path in sorted(latest.glob("image_*")):
+        key += 1
+        ext = img_path.suffix.lower().lstrip(".")
+        media = f"image/{'jpeg' if ext == 'jpg' else ext}"
+        try:
+            data = img_path.read_bytes()
+        except OSError:
+            continue
+        assets.append(
+            ImageAsset(
+                key=key,
+                note_index=0,
+                url=str(img_path),
+                ok=True,
+                path=str(img_path),
+                media_type=media,
+                data=data,
+            )
+        )
+    return assets
 
 
 def read_issues() -> list[dict[str, Any]]:
@@ -604,12 +923,20 @@ def process_arrange_issue(payload: ArrangeProcessPayload) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Please provide an issue URL.")
 
     issue, discussions = load_issue_bundle_from_url(url)
+    assets: list[ImageAsset] = []
+    try:
+        provider_name, base_url, _ref, _iid = parse_issue_source_url(url)
+        img_client = ensure_provider(provider_name, base_url)
+        discussions, assets = prepare_note_images(img_client, issue, discussions)
+    except Exception:  # noqa: BLE001 — 圖片處理失敗不應中斷整理
+        assets = []
     raw_text = build_issue_raw_text(issue, discussions)
     result, model = run_arrange_llm(
         raw_text=raw_text,
         system_prompt=payload.system_prompt,
         preferred_model=payload.preferred_model,
         model_candidates=payload.model_candidates,
+        images=assets,
     )
     saved_raw_path = save_arrange_output(
         ARRANGE_EXPORT_DIR,
@@ -641,6 +968,12 @@ def scrape_arrange_issue(payload: ArrangeProcessPayload) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Please provide an issue URL.")
 
     issue, discussions = load_issue_bundle_from_url(url)
+    try:
+        provider_name, base_url, _ref, _iid = parse_issue_source_url(url)
+        img_client = ensure_provider(provider_name, base_url)
+        discussions, _assets = prepare_note_images(img_client, issue, discussions)
+    except Exception:  # noqa: BLE001 — 圖片處理失敗不應中斷 scrape
+        pass
     raw_text = build_issue_raw_text(issue, discussions)
     saved_raw_path = save_arrange_output(
         ARRANGE_EXPORT_DIR,
@@ -663,11 +996,15 @@ def llm_arrange_issue(payload: ArrangeLlmPayload) -> dict[str, Any]:
             status_code=400, detail="Please provide raw issue text first."
         )
 
+    images = (
+        load_arrange_images_for_url(payload.url.strip()) if payload.url.strip() else []
+    )
     result, model = run_arrange_llm(
         raw_text=raw_text,
         system_prompt=payload.system_prompt,
         preferred_model=payload.preferred_model,
         model_candidates=payload.model_candidates,
+        images=images,
     )
     saved_result_path = None
     if payload.url.strip():
@@ -881,8 +1218,6 @@ def summarize_discussions(iid: int) -> dict[str, str]:
 
     config = load_config()
     gemini_key = config.get("gemini_api_key", "")
-    if not gemini_key:
-        raise HTTPException(status_code=400, detail="請先在設定中填入 Gemini API Key。")
     try:
         client, project_ref = active_provider_context(config)
         discussions = client.fetch_issue_discussions(project_ref, iid)
@@ -921,8 +1256,37 @@ def summarize_discussions(iid: int) -> dict[str, str]:
         f"{conversation}\n"
     )
 
+    summary_system = (
+        "你是專業的 Issue 專案管理助理。"
+        "請使用繁體中文。"
+        "只輸出有效 JSON。"
+        "不要前言、不要分析過程、不要 markdown、不要 code block。"
+        '輸出格式必須為 {"summary":"..."}。'
+    )
+
     last_error = ""
     for model in DISCUSSION_SUMMARY_LLM_MODELS:
+        if is_azure_model(model):
+            try:
+                raw_response = call_azure_model(
+                    model,
+                    summary_system,
+                    [{"role": "user", "text": prompt}],
+                    temperature=0.1,
+                )
+                parsed = extract_json_object(raw_response)
+                summary = parsed.get("summary", "").strip()
+                if not summary:
+                    raise ValueError("Missing summary field")
+                return {"summary": summary}
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+
+        if not gemini_key:
+            last_error = "Gemini API Key 未設定。"
+            continue
+
         gemini_url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={gemini_key}"
@@ -1070,8 +1434,6 @@ def call_gemini_answer(
 ) -> tuple[str, str]:
     config = load_config()
     gemini_key = config.get("gemini_api_key", "")
-    if not gemini_key:
-        raise HTTPException(status_code=400, detail="請先在設定中填入 Gemini API Key。")
 
     models = build_model_chain(
         preferred_model=preferred_model,
@@ -1081,6 +1443,31 @@ def call_gemini_answer(
 
     last_error = ""
     for model in models:
+        if is_azure_model(model):
+            try:
+                azure_system = (
+                    f"{system_instruction}\n\n"
+                    '請只輸出單一有效的 JSON 物件，格式為 {"answer": "..."}，'
+                    "不要 markdown、不要 code block、不要任何多餘文字。"
+                )
+                raw_response = call_azure_model(
+                    model,
+                    azure_system,
+                    gemini_contents_to_messages(contents),
+                )
+                result = extract_json_object(raw_response)
+                answer = str(result.get("answer", "")).strip()
+                if not answer:
+                    raise ValueError("Missing answer field")
+                return answer, model
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+
+        if not gemini_key:
+            last_error = "Gemini API Key 未設定。"
+            continue
+
         gemini_url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={gemini_key}"

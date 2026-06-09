@@ -170,6 +170,19 @@ GitLab 回傳 linked issues；GitHub 回傳明確 dependencies、parent 與 sub-
 
 支援 GitLab/GitHub 單一 Issue URL 與 repository Issues filter URL。
 
+### 留言圖片（Hybrid 多模態）
+
+`scrape` / `process` 會擷取**留言中的圖片**(描述不處理),用 provider 既有認證下載並暫存於
+`data/arrange_exports/images/<repo>_<iid>_<時間>/`,並用視覺模型把每張圖轉成繁中描述,
+內嵌進 raw_text 成 `【圖片#k：描述】`(下載失敗為 `【圖片#k：下載失敗】`)。
+
+LLM 整理時:當下模型**支援視覺**(由 `is_vision_model` 判定:Gemini 系列、Azure 模型設定
+未標 `novision` 者)→ 額外把原圖一併附上(Gemini `inline_data` / OpenAI `image_url` /
+Anthropic image block);純文字模型則僅依內嵌描述。
+
+`/api/arrange/llm` 兩步流程會依 `url` 重載最近一次下載的圖片。相關上限見 `backend/.env.example`
+的 `ARRANGE_IMAGE_MAX_COUNT` / `ARRANGE_IMAGE_MAX_BYTES` / `ARRANGE_VISION_MODEL`。
+
 ### `POST /api/arrange/preview`
 
 ```json
@@ -300,6 +313,18 @@ History 最多使用最近 10 筆；Chat RAG `top_k` 上限 10。回傳：
 ```
 
 若無 RAG 結果，`mode="issue_list"` 且 `sources=[]`。
+
+### LLM 模型與 provider 路由
+
+arrange / chat / summary 端點共用 `preferred_model` / `model_candidates`，後端依**模型名稱**自動路由：
+
+- Gemini 系列 → Google Gemini API（金鑰 `gemini_api_key`）。
+- Azure 模型 → 由 `backend/.env` 設定（見 `backend/.env.example`），機密走環境變數、不進 `config.json`：
+  - `protocol=openai` → `{ENDPOINT}/openai/deployments/{deploy}/chat/completions`（`api-key` header）
+  - `protocol=anthropic` → `{ENDPOINT}/anthropic/v1/messages`（`x-api-key` + `anthropic-version`，不送 temperature）
+
+前端模型清單（`legacy-app.ts` 的 `AZURE_LLM_MODEL_LIST`）的 Azure 名稱須與 `.env` 的
+`AZURE_LLM_MODEL_*` 第一欄一致。
 
 ## Analytics 與 Reports
 

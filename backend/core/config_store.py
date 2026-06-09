@@ -7,6 +7,14 @@ from typing import Any
 
 from .utils import read_json, write_json
 
+# 載入 backend/.env，讓 Azure LLM 等機密透過環境變數提供（該檔已被 .gitignore 排除）。
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ModuleNotFoundError:
+    pass
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "active_provider": "gitlab",
     "connections": {
