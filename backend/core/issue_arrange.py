@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -355,7 +355,7 @@ def parse_labels(labels: list[str]) -> dict[str, str]:
         if label.startswith("Epics:")
     ]
 
-    team_status = {column: "" for column in TEAM_MAPPING.values()}
+    team_status = dict.fromkeys(TEAM_MAPPING.values(), "")
     for label, column in TEAM_MAPPING.items():
         if label in label_set:
             team_status[column] = (
@@ -477,10 +477,7 @@ def list_arrange_outputs(base_dir: Path) -> list[dict[str, Any]]:
         directory = base_dir / folder_name
         if not directory.exists():
             continue
-        if kind == "excel":
-            patterns = ("*.xlsx",)
-        else:
-            patterns = ("*.md", "*.txt")
+        patterns = ("*.xlsx",) if kind == "excel" else ("*.md", "*.txt")
         for pattern in patterns:
             entries.extend((kind, path) for path in directory.glob(pattern))
 

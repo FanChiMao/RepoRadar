@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Callable
 
 
 class TrackerScheduler:

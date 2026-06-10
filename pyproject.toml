@@ -1,0 +1,19 @@
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+extend-exclude = ["backend/dist", "backend/build", ".venv"]
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I isort, UP pyupgrade, B flake8-bugbear,
+# C4 comprehensions, SIM simplify. Black owns formatting, so let it handle
+# line length (E501) and other layout rules to avoid fighting the formatter.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests favour readability over some bugbear/simplify rules.
+"backend/tests/*" = ["B011", "SIM"]

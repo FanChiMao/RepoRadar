@@ -34,6 +34,17 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pyinstaller
 
+      - name: Check formatting (Prettier + Black)
+        run: |
+          npx prettier --check "*.{json,md}" "src/**/*.ts" "frontend/**/*.{ts,html,css}"
+          python -m black --check backend
+
+      - name: Lint frontend (ESLint)
+        run: npx eslint "src/**/*.ts" "frontend/**/*.ts"
+
+      - name: Lint backend (Ruff)
+        run: python -m ruff check backend
+
       - name: Build TypeScript
         run: npm run build:ts
 

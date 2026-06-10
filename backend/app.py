@@ -6,18 +6,19 @@ import os
 import re
 import threading
 import uuid
-from copy import deepcopy
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, date as d_date, datetime, timedelta
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+from datetime import date as d_date
 from pathlib import Path
 from typing import Any
 
-import uvicorn
 import requests
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
+import uvicorn
+from core import project_pulse_jobs as pulse_jobs
+from core import project_pulse_store as pulse_store
+from core import repo_registry
 from core.config_store import (
     CACHE_PATH,
     REPORT_DIR,
@@ -36,6 +37,25 @@ from core.daily_briefing_service import (
     generate_daily_briefing,
     send_teams_webhook,
 )
+from core.gitlab_client import GitLabIssueClient
+from core.image_fetch import (
+    ImageAsset,
+    download_images,
+    extract_image_urls,
+    project_web_base_from_issue_url,
+    resolve_image_url,
+)
+from core.issue_arrange import (
+    build_excel_row,
+    build_issue_raw_text,
+    format_issue_preview,
+    is_filter_url,
+    list_arrange_outputs,
+    parse_filter_source_url,
+    parse_issue_source_url,
+    resolve_arrange_output,
+    save_arrange_output,
+)
 from core.llm_providers import (
     azure_model_names,
     azure_protocol,
@@ -44,38 +64,14 @@ from core.llm_providers import (
     gemini_contents_to_messages,
     is_azure_model,
     is_vision_model,
-    pick_vision_model,
 )
-from core.image_fetch import (
-    ImageAsset,
-    download_images,
-    extract_image_urls,
-    project_web_base_from_issue_url,
-    resolve_image_url,
-)
-from core.gitlab_client import GitLabIssueClient
-from core.issue_arrange import (
-    build_excel_row,
-    list_arrange_outputs,
-    build_issue_raw_text,
-    format_issue_preview,
-    is_filter_url,
-    parse_filter_source_url,
-    parse_issue_source_url,
-    resolve_arrange_output,
-    save_arrange_output,
-)
+from core.project_pulse_service import compute_next_run, generate_pulse_report
 from core.provider import (
     active_provider_context,
     create_provider,
     get_connection,
     provider_capabilities,
     source_identity,
-)
-from core.report_service import (
-    build_dashboard,
-    generate_weekly_markdown,
-    weekly_report_path,
 )
 from core.rag_service import (
     RAG_INDEX_PATH,
@@ -92,12 +88,16 @@ from core.rag_service import (
     search_rag_index,
     start_rag_rebuild_job,
 )
-from core import project_pulse_jobs as pulse_jobs
-from core import project_pulse_store as pulse_store
-from core import repo_registry
-from core.project_pulse_service import compute_next_run, generate_pulse_report
+from core.report_service import (
+    build_dashboard,
+    generate_weekly_markdown,
+    weekly_report_path,
+)
 from core.scheduler import TrackerScheduler
 from core.utils import parse_dt, read_json, utc_now, write_json
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 
 class ConfigPayload(BaseModel):
@@ -1223,6 +1223,13 @@ def execute_pulse_run(
             "issue_count": report["issue_count"],
             "ok": bool(result["ok"]),
             "error_message": result["error"] or "",
+            "report_title": report.get("title") or "",
+            "report_message": report.get("message") or "",
+            "report_mode": report.get("mode") or "",
+            "report_model": report.get("model") or "",
+            "report_generated_at": report.get("generated_at")
+            or report.get("date")
+            or "",
             "index_built_at": report.get("index_built_at"),
             "started_at": started,
             "finished_at": finished,
@@ -1968,8 +1975,8 @@ def get_issue_links(iid: int) -> list[dict[str, Any]]:
 @app.post("/api/issues/{iid}/discussions/summary")
 def summarize_discussions(iid: int) -> dict[str, str]:
     """Use Gemini/Gemma to summarize issue discussions."""
-    import json
     import time
+
     import requests
     from fastapi import HTTPException
 
@@ -2490,7 +2497,8 @@ def chat_with_issues(payload: ChatPayload) -> dict[str, Any]:
 def get_analytics() -> dict[str, Any]:
     """Burndown chart data, workload heatmap, and overdue alerts — all computed from cache."""
     from collections import Counter, defaultdict
-    from core.report_service import simplify_issue, extract_module
+
+    from core.report_service import simplify_issue
 
     issues = read_issues()
     now = datetime.now(UTC)
@@ -2571,7 +2579,7 @@ def get_analytics() -> dict[str, Any]:
             ideal_start = series[0]["total"] if series[0]["total"] > 0 else total
             ideal_series = []
             n = len(series)
-            for idx, pt in enumerate(series):
+            for idx in range(n):
                 ideal_series.append(round(ideal_start * (1 - idx / max(n - 1, 1)), 1))
             for idx, val in enumerate(ideal_series):
                 series[idx]["ideal"] = val

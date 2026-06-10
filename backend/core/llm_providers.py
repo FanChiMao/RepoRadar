@@ -94,9 +94,7 @@ def is_vision_model(name: str) -> bool:
     if entry is not None:
         return bool(entry.get("vision", True))
     lowered = (name or "").lower()
-    if lowered.startswith("gemini"):
-        return True
-    return False
+    return lowered.startswith("gemini")
 
 
 def pick_vision_model(candidates: list[str]) -> str | None:

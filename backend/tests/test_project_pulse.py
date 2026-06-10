@@ -130,6 +130,26 @@ class StoreTests(PulsePathMixin):
             self.assertNotIn("teams_webhook_url", entry)
         self.assertNotIn("secret", str(history))
 
+    def test_history_persists_report_and_caps_length(self) -> None:
+        self.patch_store()
+        store.append_history(
+            {
+                "schedule_id": "s1",
+                "repo_id": "r1",
+                "ok": True,
+                "report_title": "Daily",
+                "report_message": "x" * (store.MAX_REPORT_LEN + 500),
+                "report_mode": "llm",
+                "report_model": "gpt-5.4",
+            }
+        )
+        entry = store.load_history()[0]
+        self.assertEqual("Daily", entry["report_title"])
+        self.assertEqual("llm", entry["report_mode"])
+        self.assertEqual("gpt-5.4", entry["report_model"])
+        self.assertLess(len(entry["report_message"]), store.MAX_REPORT_LEN + 100)
+        self.assertIn("已截斷", entry["report_message"])
+
     def test_history_filters(self) -> None:
         self.patch_store()
         store.append_history({"schedule_id": "s1", "repo_id": "r1", "ok": True})

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -7,8 +8,9 @@ import re
 import threading
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any
 
 from .config_store import data_dir, load_config
 from .provider import IssueProvider, active_provider_context
@@ -697,10 +699,9 @@ def _run_rebuild_job(
     try:
         rebuild_rag_index(issue_rows, job_id=job_id)
         if on_complete is not None:
-            try:
+            # A snapshot hook must never fail the job it is attached to.
+            with contextlib.suppress(Exception):
                 on_complete()
-            except Exception:  # noqa: BLE001 — a snapshot hook must not fail the job
-                pass
     except Exception as exc:
         _set_job(
             job_id,

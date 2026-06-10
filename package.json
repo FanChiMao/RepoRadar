@@ -7,6 +7,11 @@
   "license": "MIT",
   "scripts": {
     "build:ts": "tsc -p tsconfig.json",
+    "lint": "npm run lint:ts && npm run lint:py",
+    "lint:ts": "eslint \"src/**/*.ts\" \"frontend/**/*.ts\"",
+    "lint:ts:fix": "eslint \"src/**/*.ts\" \"frontend/**/*.ts\" --fix",
+    "lint:py": ".venv\\Scripts\\python -m ruff check backend",
+    "lint:py:fix": ".venv\\Scripts\\python -m ruff check backend --fix",
     "dev": "npm run build:ts && electron .",
     "format": "prettier --write \"*.{json,md}\" \"src/**/*.ts\" \"frontend/**/*.{ts,html,css}\" && .venv\\Scripts\\python -m black backend",
     "format:check": "prettier --check \"*.{json,md}\" \"src/**/*.ts\" \"frontend/**/*.{ts,html,css}\" && .venv\\Scripts\\python -m black --check backend",
@@ -15,11 +20,15 @@
     "dist": "npm run build:ts && npm run pack:backend && electron-builder"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "electron": "^41.2.2",
     "electron-builder": "^26.8.1",
+    "eslint": "^9.39.4",
+    "globals": "^17.6.0",
     "png2icons": "^2.0.1",
     "prettier": "^3.8.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.61.0"
   },
   "build": {
     "appId": "com.openai.reporadar",

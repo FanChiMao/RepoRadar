@@ -217,6 +217,22 @@ body.sidebar-resizing .sidebar-resizer::before {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/* Unread reply hint for the AI 助理 entry when an answer arrives off-screen. */
+.sidebar-nav-link.has-unread {
+  position: relative;
+}
+.sidebar-nav-link.has-unread .sidebar-nav-icon::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--red-400, #f87171);
+  border: 2px solid var(--bg-elevated, #14141c);
+}
+
 .sidebar-nav-copy {
   display: flex;
   min-width: 0;
@@ -239,6 +255,7 @@ body.sidebar-resizing .sidebar-resizer::before {
 }
 
 .sidebar-nav-icon {
+  position: relative;
   display: inline-flex;
   width: 20px;
   height: 20px;

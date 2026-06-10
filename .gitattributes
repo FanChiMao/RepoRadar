@@ -1,0 +1,14 @@
+# Force LF in the working tree for text/source files so Prettier's
+# `endOfLine: "lf"` check passes on every platform (incl. Windows CI runners).
+# Binary assets are left untouched by git's auto-detection.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

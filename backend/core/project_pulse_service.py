@@ -13,8 +13,9 @@ tone/format/focus but can never override the safety rules.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from .daily_briefing_service import (
     CATEGORY_ORDER,
@@ -233,9 +234,11 @@ def _trim_context(
     kept: list[dict[str, Any]] = []
     for chunk in chunks:
         source_type = chunk.get("source_type")
-        if source_type == "overview":
-            kept.append(chunk)
-        elif is_daily and _chunk_changed_in_window(chunk, start_utc, end_utc):
+        if (
+            source_type == "overview"
+            or is_daily
+            and _chunk_changed_in_window(chunk, start_utc, end_utc)
+        ):
             kept.append(chunk)
         elif source_type in budget and seen[source_type] < budget[source_type]:
             kept.append(chunk)
