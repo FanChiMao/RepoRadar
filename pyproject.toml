@@ -17,3 +17,10 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 # Tests favour readability over some bugbear/simplify rules.
 "backend/tests/*" = ["B011", "SIM"]
+
+[tool.coverage.run]
+source = ["backend"]
+omit = ["backend/tests/*", "backend/dist/*", "backend/build/*"]
+
+[tool.coverage.report]
+show_missing = true
