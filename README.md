@@ -1,12 +1,12 @@
 # Repo Radar
 
 [![CI](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml/badge.svg)](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml)
-[![latest release](https://img.shields.io/github/v/release/FanChiMao/RepoRadar?label=latest%20release)](https://github.com/FanChiMao/RepoRadar/releases/latest)
+[![latest](https://img.shields.io/github/v/release/FanChiMao/RepoRadar?label=latest%20release)](https://github.com/FanChiMao/RepoRadar/releases/latest)
 [![codecov](https://codecov.io/gh/FanChiMao/RepoRadar/graph/badge.svg)](https://codecov.io/gh/FanChiMao/RepoRadar)
 
 Repo Radar 是一套 Electron 桌面應用程式，使用 partial-based HTML/CSS/TypeScript 前端與 Python FastAPI 後端，集中同步、分析與彙整 GitLab 或 GitHub Issues。
 
-產品名稱仍為 **Repo Radar**，但目前支援 GitLab 與 GitHub Issue Provider。一次只能啟用一個 provider 與一個 project/repository，切換來源時會清除 Issue 與 RAG cache，避免不同來源資料混用。
+目前支援 GitLab 與 GitHub Issue Provider。一次只能啟用一個 provider 與一個 project/repository，切換來源時會清除 Issue 與 RAG cache，避免不同來源資料混用。
 
 ## 主要功能
 
