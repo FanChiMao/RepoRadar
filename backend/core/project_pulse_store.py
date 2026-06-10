@@ -27,6 +27,7 @@ SCHEDULES_PATH = data_dir() / "ai_report_schedules.json"
 HISTORY_PATH = data_dir() / "ai_report_history.json"
 
 MAX_HISTORY = 100
+MAX_REPORT_LEN = 20000
 
 REPORT_TYPES = ("daily-briefing", "custom-report")
 ISSUE_WINDOWS = ("today", "since-last-run", "last-7-days")
@@ -112,6 +113,14 @@ class AiReportRunHistory(BaseModel):
     issue_count: int = 0
     ok: bool = False
     error_message: str = ""
+
+    # Full LLM report so a history row can be re-opened in the preview modal.
+    # ``report_message`` is length-capped on write (see append_history).
+    report_title: str = ""
+    report_message: str = ""
+    report_mode: str = ""
+    report_model: str = ""
+    report_generated_at: str = ""
 
     index_built_at: str | None = None
     started_at: str = ""
@@ -337,6 +346,14 @@ def append_history(entry: dict[str, Any]) -> dict[str, Any]:
     if not record.get("id"):
         record["id"] = f"run_{uuid.uuid4().hex[:12]}"
     record.pop("teams_webhook_url", None)
+
+    # Cap the stored report body so a long backlog of history can't bloat the
+    # json file unbounded; the modal still shows the full report for recent runs.
+    message = record.get("report_message") or ""
+    if len(message) > MAX_REPORT_LEN:
+        record["report_message"] = (
+            message[:MAX_REPORT_LEN] + "\n\n…（內容過長，已截斷）"
+        )
 
     history = load_history()
     history.insert(0, record)

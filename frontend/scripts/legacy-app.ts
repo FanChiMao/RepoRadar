@@ -104,7 +104,6 @@ const PULSE_LLM_MODEL_LIST = [
   ...AZURE_LLM_MODEL_LIST,
   ...CHAT_RAG_GEMINI_MODEL_LIST.filter((model) => !AZURE_LLM_MODEL_LIST.includes(model)),
 ];
-const DISCUSSION_SUMMARY_GEMINI_MODEL_LIST = ['gemini-2.5-flash', 'gemma-4-31b-it'];
 const DEFAULT_GEMINI_MODEL = ARRANGE_GEMINI_MODEL_LIST[0];
 const DEFAULT_CHAT_RAG_MODEL = CHAT_RAG_GEMINI_MODEL_LIST[0];
 const DEFAULT_PULSE_LLM_MODEL = PULSE_LLM_MODEL_LIST[0];
@@ -398,6 +397,7 @@ const state = {
   ganttWeek: '',
   currentView: 'dashboard',
   chatDockOpen: false,
+  chatUnread: false,
   uiPreferences: createDefaultUiPreferences(),
   arrangePromptTemplates: [] as ArrangePromptTemplate[],
   selectedArrangePromptTemplateId: '' as string,
@@ -1368,15 +1368,6 @@ function getGanttStatusKind(issue: IssueItem): GanttStatusKind {
   return 'open';
 }
 
-function getGanttStatusLabel(status: GanttStatusKind): string {
-  const labels: Record<GanttStatusKind, string> = {
-    open: '開啟中',
-    in_progress: '進行中',
-    closed: '已關閉',
-  };
-  return labels[status];
-}
-
 function getIssueLinkTypeLabel(linkType: string, direction: LinkedItemInfo['direction']): string {
   const outbound: Record<string, string> = {
     relates_to: '關聯',
@@ -1952,81 +1943,11 @@ function getGanttGroupInfo(
   }
 }
 
-function buildGanttGroupsEnhanced(
-  issues: IssueItem[],
-  groupBy: GanttGroupBy,
-): Array<{ key: string; label: string; items: IssueItem[] }> {
-  if (groupBy === 'none') {
-    return [
-      { key: '__all__', label: '全部 Issue', items: [...issues].sort(compareIssuesForGantt) },
-    ];
-  }
-
-  const groups = new Map<string, { key: string; label: string; items: IssueItem[] }>();
-  for (const issue of issues) {
-    const group = getGanttGroupInfo(issue, groupBy);
-    if (!groups.has(group.key)) {
-      groups.set(group.key, { ...group, items: [] });
-    }
-    groups.get(group.key)!.items.push(issue);
-  }
-
-  return Array.from(groups.values())
-    .map((group) => ({ ...group, items: group.items.sort(compareIssuesForGantt) }))
-    .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hant'));
-}
-
 function getVisibleMilestoneDeadlines(
   issues: IssueItem[],
   minDate: Date,
   maxDate: Date,
 ): Array<{ milestone: string; dueDate: Date }> {
-  function getPrimaryAssigneeAvatar(issue: IssueItem): string | null {
-    return issue.assignee_details?.find((item) => item.avatar_url)?.avatar_url ?? null;
-  }
-
-  function buildGanttGroupsWithAvatar(
-    sourceIssues: IssueItem[],
-    groupBy: GanttGroupBy,
-  ): Array<{ key: string; label: string; avatarUrl: string | null; items: IssueItem[] }> {
-    if (groupBy === 'none') {
-      return [
-        {
-          key: '__all__',
-          label: '全部 Issue',
-          avatarUrl: null,
-          items: [...sourceIssues].sort(compareIssuesForGantt),
-        },
-      ];
-    }
-
-    const groups = new Map<
-      string,
-      { key: string; label: string; avatarUrl: string | null; items: IssueItem[] }
-    >();
-    for (const issue of sourceIssues) {
-      const group = getGanttGroupInfo(issue, groupBy);
-      if (!groups.has(group.key)) {
-        groups.set(group.key, {
-          key: group.key,
-          label: group.label,
-          avatarUrl: groupBy === 'assignee' ? getPrimaryAssigneeAvatar(issue) : null,
-          items: [],
-        });
-      }
-
-      const existing = groups.get(group.key)!;
-      existing.items.push(issue);
-      if (!existing.avatarUrl && groupBy === 'assignee') {
-        existing.avatarUrl = getPrimaryAssigneeAvatar(issue);
-      }
-    }
-
-    return Array.from(groups.values())
-      .map((group) => ({ ...group, items: group.items.sort(compareIssuesForGantt) }))
-      .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hant'));
-  }
-
   if (!state.analytics) return [];
   const visibleMilestones = new Set(
     issues.map((issue) => issue.milestone).filter(Boolean) as string[],
@@ -2101,497 +2022,6 @@ function getIssueTimelineRange(
   };
 }
 
-function renderGanttEnhanced(issues: IssueItem[]): void {
-  const container = byId<HTMLDivElement>('gantt-chart');
-  const summary = byId<HTMLDivElement>('gantt-summary');
-
-  if (!issues.length) {
-    summary.textContent = '目前沒有可顯示的 Issue。';
-    container.innerHTML = '<div class="empty-state">目前沒有可顯示的 Issue。</div>';
-    return;
-  }
-
-  const today = startOfDay(new Date())!;
-  const quickView = byId<HTMLSelectElement>('gantt-quick-view').value as GanttQuickView;
-  const groupBy = byId<HTMLSelectElement>('gantt-group-by').value as GanttGroupBy;
-  const milestoneFilter = byId<HTMLSelectElement>('gantt-milestone-filter').value;
-  const assigneeFilter = byId<HTMLSelectElement>('gantt-assignee-filter').value;
-  const stateFilter = byId<HTMLSelectElement>('gantt-state-filter').value;
-  const milestoneRanges = getMilestoneRangeMap();
-
-  let filtered = [...issues];
-  if (milestoneFilter) filtered = filtered.filter((issue) => issue.milestone === milestoneFilter);
-  if (assigneeFilter)
-    filtered = filtered.filter((issue) => (issue.assignees || []).includes(assigneeFilter));
-  if (stateFilter) filtered = filtered.filter((issue) => issue.state === stateFilter);
-
-  filtered = applyGanttQuickView(filtered, today, quickView);
-
-  const windowRange = getSelectedTimelineWindow();
-  const minDate = windowRange.start;
-  const maxDate = windowRange.end;
-
-  // Filter issues that overlap with the selected month
-  filtered = filtered.filter((issue) => {
-    const { start, end } = getIssueTimelineRange(issue, milestoneRanges, today);
-    return start <= maxDate && end >= minDate;
-  });
-
-  if (!filtered.length) {
-    summary.textContent = '目前篩選條件下沒有符合的 Issue。';
-    container.innerHTML = '<div class="empty-state">目前篩選條件下沒有符合的 Issue。</div>';
-    return;
-  }
-
-  const days: Date[] = [];
-  const cursor = new Date(minDate);
-  while (cursor <= maxDate) {
-    days.push(new Date(cursor));
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  const totalDays = days.length;
-  const labelWidth = 260;
-  const dayWidth = totalDays <= 30 ? 40 : totalDays <= 60 ? 30 : totalDays <= 120 ? 22 : 16;
-  const gridTotalWidth = totalDays * dayWidth;
-  const todayStr = today.toISOString().slice(0, 10);
-
-  function dayIndex(date: Date): number {
-    return Math.round((date.getTime() - minDate.getTime()) / 86400000);
-  }
-
-  const labelInterval = Math.max(1, Math.ceil(40 / dayWidth));
-  let monthHeaderHtml = '';
-  let dayHeaderHtml = '';
-  let prevMonth = -1;
-  let monthSpanStart = 0;
-  const monthSegments: { label: string; span: number }[] = [];
-
-  for (let i = 0; i < totalDays; i++) {
-    const day = days[i];
-    const monthKey = day.getFullYear() * 100 + day.getMonth();
-    if (monthKey !== prevMonth) {
-      if (prevMonth !== -1) {
-        monthSegments.push({
-          label: `${days[monthSpanStart].getFullYear()}/${days[monthSpanStart].getMonth() + 1}`,
-          span: i - monthSpanStart,
-        });
-      }
-      monthSpanStart = i;
-      prevMonth = monthKey;
-    }
-
-    const showLabel =
-      i % labelInterval === 0 || day.getDate() === 1 || day.toISOString().slice(0, 10) === todayStr;
-    const classes = [
-      day.getDay() === 0 || day.getDay() === 6 ? 'weekend' : '',
-      day.toISOString().slice(0, 10) === todayStr ? 'today' : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
-    dayHeaderHtml += `<div class="gantt-header-day ${classes}" style="width:${dayWidth}px">${showLabel ? day.getDate() : ''}</div>`;
-  }
-
-  monthSegments.push({
-    label: `${days[monthSpanStart].getFullYear()}/${days[monthSpanStart].getMonth() + 1}`,
-    span: totalDays - monthSpanStart,
-  });
-  for (const segment of monthSegments) {
-    monthHeaderHtml += `<div class="gantt-header-month" style="width:${segment.span * dayWidth}px">${segment.label}</div>`;
-  }
-
-  let bgStrips = '';
-  for (let i = 0; i < totalDays; i++) {
-    const day = days[i];
-    const isWeekend = day.getDay() === 0 || day.getDay() === 6;
-    const isToday = day.toISOString().slice(0, 10) === todayStr;
-    if (isWeekend) {
-      bgStrips += `<div class="gantt-bg-strip weekend" style="left:${i * dayWidth}px;width:${dayWidth}px"></div>`;
-    }
-    if (isToday) {
-      bgStrips += `<div class="gantt-bg-strip today" style="left:${i * dayWidth}px;width:${dayWidth}px"></div>`;
-    }
-  }
-
-  const groups = buildGanttGroupsForSafeRender(filtered, groupBy);
-  const deadlineMarkers = getVisibleMilestoneDeadlines(filtered, minDate, maxDate)
-    .map((marker) => {
-      const left = dayIndex(marker.dueDate) * dayWidth + dayWidth / 2;
-      return `
-        <div class="gantt-deadline-marker" style="left:${left}px">
-          <span class="gantt-deadline-label" title="${escapeHtml(marker.milestone)}">${escapeHtml(marker.milestone)}</span>
-          <span class="gantt-deadline-line"></span>
-        </div>
-      `;
-    })
-    .join('');
-
-  let rowsHtml = '';
-  let riskIssueCount = 0;
-  for (const group of groups) {
-    const collapsed = state.ganttCollapsedGroups.has(group.key);
-    const groupRiskCount = group.items.filter(
-      (issue) => getGanttRiskFlags(issue, today).length > 0,
-    ).length;
-
-    if (groupBy !== 'none') {
-      const groupAvatar =
-        groupBy === 'assignee'
-          ? group.avatarUrl
-            ? `<span class="gantt-group-avatar-shell"><img class="gantt-group-avatar" src="${escapeHtml(group.avatarUrl)}" alt="${escapeHtml(group.label)}" /></span>`
-            : `<span class="gantt-group-avatar-shell"><span class="gantt-group-avatar fallback">${escapeHtml(group.label.slice(0, 1).toUpperCase())}</span></span>`
-          : '';
-      rowsHtml += `
-        <div class="gantt-group-header" style="grid-template-columns:${labelWidth}px ${gridTotalWidth}px" data-group-key="${escapeHtml(group.key)}">
-          <div class="gantt-group-title">
-            <span class="gantt-group-toggle">${collapsed ? '+' : '-'}</span>
-            ${groupAvatar}
-            <strong>${escapeHtml(group.label)}</strong>
-            <div class="gantt-group-meta">
-              <span class="gantt-group-badge">${group.items.length} issues</span>
-              ${groupRiskCount ? `<span class="gantt-group-badge risk">${groupRiskCount} 風險</span>` : ''}
-            </div>
-          </div>
-          <div class="gantt-group-spacer"></div>
-        </div>
-      `;
-    }
-
-    if (collapsed) continue;
-
-    for (const issue of group.items) {
-      const { start: scheduleStart, end: scheduleEnd } = getIssueTimelineRange(
-        issue,
-        milestoneRanges,
-        today,
-      );
-      const riskFlags = getGanttRiskFlags(issue, today);
-      if (riskFlags.length > 0) riskIssueCount += 1;
-
-      const barStart = dayIndex(scheduleStart);
-      const barEnd = dayIndex(scheduleEnd);
-      const startPx = barStart * dayWidth;
-      const widthPx = Math.max(dayWidth, (barEnd - barStart + 1) * dayWidth - 4);
-
-      let barClass = issue.state === 'closed' ? 'closed' : 'opened';
-      const issueDue = startOfDay(issue.due_date);
-      if (issue.state !== 'closed' && issueDue && issueDue < today) {
-        barClass = 'overdue';
-      }
-
-      const assigneeStr = (issue.assignees || []).join(', ') || '未指派';
-      const riskClasses = riskFlags.map((flag) => `risk-${flag}`).join(' ');
-      const riskTags = !riskFlags.length
-        ? ''
-        : `<div class="gantt-risk-tags">${riskFlags
-            .slice(0, 3)
-            .map((flag) => `<span class="risk-tag ${flag}">${getRiskFlagLabel(flag)}</span>`)
-            .join('')}</div>`;
-
-      rowsHtml += `
-        <div class="gantt-row" style="grid-template-columns:${labelWidth}px ${gridTotalWidth}px">
-          <div class="gantt-row-label" data-iid="${issue.iid}" title="#${issue.iid} ${escapeHtml(issue.title)}">
-            <strong>#${issue.iid}</strong> ${escapeHtml(issue.title.length > 26 ? `${issue.title.slice(0, 26)}...` : issue.title)}
-            <small>${escapeHtml(assigneeStr)} · ${escapeHtml(issue.milestone ?? '未排 Milestone')} · ${escapeHtml(issue.module ?? '未分類 Module')}</small>
-            ${riskTags}
-          </div>
-          <div class="gantt-row-bars">
-            <div class="gantt-bar ${barClass} ${riskClasses}"
-                 style="left:${startPx + 2}px;width:${widthPx}px;"
-                 data-iid="${issue.iid}"
-                 data-title="${escapeHtml(issue.title)}"
-                 data-state="${issue.state}"
-                 data-assignees="${escapeHtml(assigneeStr)}"
-                 data-milestone="${escapeHtml(issue.milestone ?? '-')}"
-                 data-module="${escapeHtml(issue.module ?? '-')}"
-                 data-created="${formatGanttDate(scheduleStart)}"
-                 data-due="${formatGanttDate(scheduleEnd)}"
-                 data-risk="${escapeHtml(riskFlags.map((flag) => getRiskFlagLabel(flag)).join('、') || '無')}"
-                 data-url="${escapeHtml(issue.web_url ?? '')}">
-              <span class="gantt-bar-label">${widthPx > 64 ? `#${issue.iid}` : ''}</span>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-  }
-
-  const todayIdx = dayIndex(today);
-  const todayPx = todayIdx * dayWidth + dayWidth / 2;
-  const groupLabel = groupBy === 'none' ? '不分組' : `依 ${groupBy} 分組`;
-  const quickViewLabel =
-    byId<HTMLSelectElement>('gantt-quick-view').selectedOptions[0]?.textContent || '自訂';
-  summary.textContent = `顯示 ${filtered.length} / ${issues.length} 筆，${groupLabel}，快速視圖：${quickViewLabel}${riskIssueCount ? `，共 ${riskIssueCount} 筆風險` : ''}`;
-
-  container.setAttribute('data-risk-mode', 'highlight');
-  container.innerHTML = `
-    <div class="gantt-scroll">
-      <div class="gantt-header" style="grid-template-columns:${labelWidth}px ${gridTotalWidth}px">
-        <div class="gantt-header-label">Issue</div>
-        <div class="gantt-header-dates-wrap">
-          <div class="gantt-header-months" style="display:flex">${monthHeaderHtml}</div>
-          <div class="gantt-header-dates" style="display:flex">${dayHeaderHtml}</div>
-        </div>
-      </div>
-      <div class="gantt-body">
-        <div class="gantt-body-inner">
-          <div class="gantt-bg-strips" style="left:${labelWidth}px;width:${gridTotalWidth}px">${bgStrips}</div>
-          <div class="gantt-deadlines" style="left:${labelWidth}px;width:${gridTotalWidth}px">${deadlineMarkers}</div>
-          ${rowsHtml}
-          ${todayIdx >= 0 && todayIdx < totalDays ? `<div class="gantt-today-line" style="left:${todayPx + labelWidth}px"></div>` : ''}
-        </div>
-      </div>
-    </div>
-  `;
-
-  const tooltip = ensureGanttTooltip();
-  container.querySelectorAll<HTMLElement>('.gantt-bar').forEach((bar) => {
-    bar.addEventListener('mouseenter', (event) => {
-      const el = event.currentTarget as HTMLElement;
-      tooltip.innerHTML = `
-        <h5>#${el.dataset.iid} ${el.dataset.title}</h5>
-        <p>狀態：${el.dataset.state === 'opened' ? '進行中' : '已完成'}</p>
-        <p>Assignee：${el.dataset.assignees}</p>
-        <p>Milestone：${el.dataset.milestone}</p>
-        <p>Module：${el.dataset.module}</p>
-        <p>起始：${el.dataset.created} · 到期：${el.dataset.due}</p>
-        <p>風險：${el.dataset.risk}</p>
-        <p>單擊開啟詳細，雙擊前往來源平台</p>
-      `;
-      tooltip.classList.add('visible');
-    });
-    bar.addEventListener('mousemove', (event) => {
-      const me = event as MouseEvent;
-      tooltip.style.left = `${me.clientX + 12}px`;
-      tooltip.style.top = `${me.clientY + 12}px`;
-    });
-    bar.addEventListener('mouseleave', () => {
-      tooltip.classList.remove('visible');
-    });
-    bar.addEventListener('click', (event) => {
-      const el = event.currentTarget as HTMLElement;
-      const issue = state.allIssues.find((item) => item.iid === Number(el.dataset.iid));
-      if (issue) openIssueDetail(issue);
-    });
-    bar.addEventListener('dblclick', (event) => {
-      const el = event.currentTarget as HTMLElement;
-      if (el.dataset.url) {
-        void window.trackerBridge.openPath(el.dataset.url);
-      }
-    });
-  });
-
-  container.querySelectorAll<HTMLElement>('.gantt-row-label[data-iid]').forEach((label) => {
-    label.addEventListener('click', (event) => {
-      const el = event.currentTarget as HTMLElement;
-      const issue = state.allIssues.find((item) => item.iid === Number(el.dataset.iid));
-      if (issue) openIssueDetail(issue);
-    });
-  });
-
-  container
-    .querySelectorAll<HTMLElement>('.gantt-group-header[data-group-key]')
-    .forEach((header) => {
-      header.addEventListener('click', (event) => {
-        const el = event.currentTarget as HTMLElement;
-        const key = el.dataset.groupKey;
-        if (!key) return;
-        if (state.ganttCollapsedGroups.has(key)) {
-          state.ganttCollapsedGroups.delete(key);
-        } else {
-          state.ganttCollapsedGroups.add(key);
-        }
-        scheduleGanttRender(state.allIssues);
-      });
-    });
-}
-
-/* ══════════════════════════════════════════════
-   CALENDAR VIEW
-   ══════════════════════════════════════════════ */
-function renderCalendarView(issues: IssueItem[]): void {
-  const container = byId<HTMLDivElement>('calendar-chart');
-  const summary = byId<HTMLDivElement>('gantt-summary');
-
-  if (!issues.length) {
-    summary.textContent = '目前沒有可顯示的 Issue。';
-    container.innerHTML = '<div class="empty-state">目前沒有可顯示的 Issue。</div>';
-    return;
-  }
-
-  const today = startOfDay(new Date())!;
-  const todayStr = today.toISOString().slice(0, 10);
-  const quickView = byId<HTMLSelectElement>('gantt-quick-view').value as GanttQuickView;
-  const milestoneFilter = byId<HTMLSelectElement>('gantt-milestone-filter').value;
-  const assigneeFilter = byId<HTMLSelectElement>('gantt-assignee-filter').value;
-  const stateFilter = byId<HTMLSelectElement>('gantt-state-filter').value;
-  const milestoneRanges = getMilestoneRangeMap();
-
-  let filtered = [...issues];
-  if (milestoneFilter) filtered = filtered.filter((i) => i.milestone === milestoneFilter);
-  if (assigneeFilter)
-    filtered = filtered.filter((i) => (i.assignees || []).includes(assigneeFilter));
-  if (stateFilter) filtered = filtered.filter((i) => i.state === stateFilter);
-  filtered = applyGanttQuickView(filtered, today, quickView);
-
-  const { year, month, minDate, maxDate } = getSelectedMonth();
-
-  // Filter issues overlapping this month
-  filtered = filtered.filter((issue) => {
-    const { start, end } = getIssueTimelineRange(issue, milestoneRanges, today);
-    return start <= maxDate && end >= minDate;
-  });
-
-  // Build calendar grid: find the Monday before (or on) the 1st, end on Sunday after (or on) last day
-  const totalDaysInMonth = maxDate.getDate();
-  const firstDow = minDate.getDay(); // 0=Sun
-  const startOffset = firstDow === 0 ? 6 : firstDow - 1; // days to go back to reach Monday
-  const calStart = new Date(year, month - 1, 1 - startOffset);
-  calStart.setHours(0, 0, 0, 0);
-  // Build 6 weeks (42 cells) to always have consistent grid
-  const totalCells = 42;
-  const cells: Date[] = [];
-  for (let i = 0; i < totalCells; i++) {
-    const d = new Date(calStart);
-    d.setDate(calStart.getDate() + i);
-    d.setHours(0, 0, 0, 0);
-    cells.push(d);
-  }
-
-  // Map issues to each day they span
-  const dayIssuesMap = new Map<string, IssueItem[]>();
-  for (const issue of filtered) {
-    const { start, end } = getIssueTimelineRange(issue, milestoneRanges, today);
-    for (const cell of cells) {
-      if (cell >= start && cell <= end) {
-        const key = cell.toISOString().slice(0, 10);
-        if (!dayIssuesMap.has(key)) dayIssuesMap.set(key, []);
-        dayIssuesMap.get(key)!.push(issue);
-      }
-    }
-  }
-
-  // Compute bar segments per issue: for each cell, determine if the issue
-  // starts, continues, or ends on that day so we can render connected bars
-  function getBarSegment(
-    issue: IssueItem,
-    cellDate: Date,
-  ): 'start' | 'middle' | 'end' | 'single' | null {
-    const { start, end } = getIssueTimelineRange(issue, milestoneRanges, today);
-    const cellStr = cellDate.toISOString().slice(0, 10);
-    const startStr = start.toISOString().slice(0, 10);
-    const endStr = end.toISOString().slice(0, 10);
-    if (cellDate < start || cellDate > end) return null;
-    const isStart = cellStr === startStr || cellDate.getDay() === 1; // bar start or Monday (new row)
-    const isEnd = cellStr === endStr || cellDate.getDay() === 0; // bar end or Sunday (end of row)
-    if (isStart && isEnd) return 'single';
-    if (isStart) return 'start';
-    if (isEnd) return 'end';
-    return 'middle';
-  }
-
-  const weekdayHeaders = ['一', '二', '三', '四', '五', '六', '日'];
-  let html = '<div class="cal-grid">';
-  // Weekday header row
-  html += '<div class="cal-header-row">';
-  for (const wd of weekdayHeaders) {
-    html += `<div class="cal-header-cell">${wd}</div>`;
-  }
-  html += '</div>';
-
-  // Calendar cells
-  html += '<div class="cal-body">';
-  for (let i = 0; i < totalCells; i++) {
-    const cell = cells[i];
-    const cellStr = cell.toISOString().slice(0, 10);
-    const inMonth = cell.getMonth() === month - 1;
-    const isToday = cellStr === todayStr;
-    const isWeekend = cell.getDay() === 0 || cell.getDay() === 6;
-    const cellIssues = dayIssuesMap.get(cellStr) || [];
-
-    const classes = [
-      'cal-cell',
-      inMonth ? '' : 'other-month',
-      isToday ? 'today' : '',
-      isWeekend ? 'weekend' : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
-
-    html += `<div class="${classes}">`;
-    html += `<div class="cal-date">${cell.getDate()}</div>`;
-    html += '<div class="cal-issues">';
-
-    // Render bar segments for issues on this day
-    const seen = new Set<number>();
-    for (const issue of cellIssues) {
-      if (seen.has(issue.iid)) continue;
-      seen.add(issue.iid);
-      const seg = getBarSegment(issue, cell);
-      if (!seg) continue;
-
-      let barClass = issue.state === 'closed' ? 'closed' : 'opened';
-      const issueDue = startOfDay(issue.due_date);
-      if (issue.state !== 'closed' && issueDue && issueDue < today) barClass = 'overdue';
-
-      const showLabel = seg === 'start' || seg === 'single';
-      const label = showLabel
-        ? `#${issue.iid} ${issue.title.length > 12 ? issue.title.slice(0, 12) + '...' : issue.title}`
-        : '';
-
-      html += `<div class="cal-bar ${barClass} seg-${seg}"
-                    data-iid="${issue.iid}"
-                    data-title="${escapeHtml(issue.title)}"
-                    data-state="${issue.state}"
-                    data-assignees="${escapeHtml((issue.assignees || []).join(', ') || '未指派')}"
-                    data-milestone="${escapeHtml(issue.milestone ?? '-')}"
-                    data-module="${escapeHtml(issue.module ?? '-')}"
-                    data-created="${formatGanttDate(getIssueTimelineRange(issue, milestoneRanges, today).start)}"
-                    data-due="${formatGanttDate(getIssueTimelineRange(issue, milestoneRanges, today).end)}"
-                    data-url="${escapeHtml(issue.web_url ?? '')}">
-        ${showLabel ? `<span class="cal-bar-label">${escapeHtml(label)}</span>` : ''}
-      </div>`;
-    }
-
-    html += '</div></div>';
-  }
-  html += '</div></div>';
-
-  summary.textContent = `月曆模式：${year} 年 ${month} 月，顯示 ${filtered.length} / ${issues.length} 筆`;
-  container.innerHTML = html;
-
-  // Wire tooltip + click for calendar bars
-  const tooltip = ensureGanttTooltip();
-  container.querySelectorAll<HTMLElement>('.cal-bar').forEach((bar) => {
-    bar.addEventListener('mouseenter', (event) => {
-      const el = event.currentTarget as HTMLElement;
-      tooltip.innerHTML = `
-        <h5>#${el.dataset.iid} ${el.dataset.title}</h5>
-        <p>狀態：${el.dataset.state === 'opened' ? '進行中' : '已完成'}</p>
-        <p>Assignee：${el.dataset.assignees}</p>
-        <p>Milestone：${el.dataset.milestone}</p>
-        <p>起始：${el.dataset.created} · 到期：${el.dataset.due}</p>
-      `;
-      tooltip.classList.add('visible');
-    });
-    bar.addEventListener('mousemove', (event) => {
-      const me = event as MouseEvent;
-      tooltip.style.left = `${me.clientX + 12}px`;
-      tooltip.style.top = `${me.clientY + 12}px`;
-    });
-    bar.addEventListener('mouseleave', () => tooltip.classList.remove('visible'));
-    bar.addEventListener('click', (event) => {
-      const el = event.currentTarget as HTMLElement;
-      const issue = state.allIssues.find((item) => item.iid === Number(el.dataset.iid));
-      if (issue) openIssueDetail(issue);
-    });
-    bar.addEventListener('dblclick', (event) => {
-      const el = event.currentTarget as HTMLElement;
-      if (el.dataset.url) void window.trackerBridge.openPath(el.dataset.url);
-    });
-  });
-}
-
 function getPrimaryAssigneeAvatarForGantt(issue: IssueItem): string | null {
   return issue.assignee_details?.find((item) => item.avatar_url)?.avatar_url ?? null;
 }
@@ -2636,34 +2066,6 @@ function buildGanttGroupsForSafeRender(
   return Array.from(groups.values())
     .map((group) => ({ ...group, items: group.items.sort(compareIssuesForGantt) }))
     .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hant'));
-}
-
-function decorateGanttRowAvatars(container: HTMLDivElement, issues: IssueItem[]): void {
-  const issueMap = new Map(issues.map((issue) => [String(issue.iid), issue]));
-
-  container.querySelectorAll<HTMLElement>('.gantt-row-label[data-iid]').forEach((label) => {
-    const issue = issueMap.get(label.dataset.iid ?? '');
-    if (!issue) return;
-
-    const assigneeText = (issue.assignees || []).join(', ') || 'Unassigned';
-    const primaryAssignee = issue.assignee_details?.[0]?.name || issue.assignees?.[0] || 'U';
-    const assigneeAvatar = getPrimaryAssigneeAvatarForGantt(issue);
-    const assigneeAvatarHtml = assigneeAvatar
-      ? `<img class="gantt-row-avatar" src="${escapeHtml(assigneeAvatar)}" alt="${escapeHtml(primaryAssignee)}" />`
-      : `<span class="gantt-row-avatar fallback">${escapeHtml(primaryAssignee.slice(0, 1).toUpperCase())}</span>`;
-    const riskTags = label.querySelector('.gantt-risk-tags')?.outerHTML ?? '';
-
-    label.innerHTML = `
-      <div class="gantt-row-head">
-        ${assigneeAvatarHtml}
-        <div class="gantt-row-copy">
-          <div class="gantt-row-title"><strong>#${issue.iid}</strong> ${escapeHtml(issue.title.length > 34 ? `${issue.title.slice(0, 34)}...` : issue.title)}</div>
-          <small>${escapeHtml(assigneeText)} 繚 ${escapeHtml(issue.milestone ?? 'No milestone')} 繚 ${escapeHtml(issue.module ?? 'No module')}</small>
-        </div>
-      </div>
-      ${riskTags}
-    `;
-  });
 }
 
 function renderGanttEnhancedSafe(issues: IssueItem[]): void {
@@ -3365,6 +2767,7 @@ function setActiveView(view: string): void {
     mountChatSurfaceTo('assistant-mount');
     getById<HTMLElement>('chat-dock')?.classList.remove('open');
     state.chatDockOpen = false;
+    setChatUnread(false);
     renderRagStatusBadge();
     renderRagQuestionState();
     const input = getById<HTMLInputElement>('chat-input');
@@ -4284,94 +3687,6 @@ async function exportArrangeExcel(): Promise<void> {
 /* ══════════════════════════════════════════════
    TAB: ANALYTICS — Burndown / Workload / Alerts
    ══════════════════════════════════════════════ */
-function renderBurndownChart(ms: BurndownMilestone): void {
-  const container = byId<HTMLDivElement>('burndown-chart');
-  const statsDiv = byId<HTMLDivElement>('burndown-stats');
-
-  if (!ms.series.length) {
-    container.innerHTML = '<div class="empty-state">此 Milestone 沒有足夠資料。</div>';
-    statsDiv.innerHTML = '';
-    return;
-  }
-
-  const series = ms.series;
-  const W = 700;
-  const H = 300;
-  const pad = { top: 20, right: 20, bottom: 40, left: 45 };
-  const chartW = W - pad.left - pad.right;
-  const chartH = H - pad.top - pad.bottom;
-  const maxY = Math.max(...series.map((p) => Math.max(p.open, p.total, p.ideal ?? 0)), 1);
-  const n = series.length;
-
-  function x(i: number): number {
-    return pad.left + (i / Math.max(n - 1, 1)) * chartW;
-  }
-  function y(v: number): number {
-    return pad.top + chartH - (v / maxY) * chartH;
-  }
-
-  function polyline(data: number[], color: string, dashed = false): string {
-    const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-    return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" ${dashed ? 'stroke-dasharray="6,4"' : ''} />`;
-  }
-
-  // Grid lines
-  let gridLines = '';
-  const gridSteps = 5;
-  for (let i = 0; i <= gridSteps; i++) {
-    const yy = pad.top + (i / gridSteps) * chartH;
-    const val = Math.round(maxY * (1 - i / gridSteps));
-    gridLines += `<line x1="${pad.left}" y1="${yy}" x2="${W - pad.right}" y2="${yy}" stroke="rgba(255,255,255,0.06)" />`;
-    gridLines += `<text x="${pad.left - 8}" y="${yy + 4}" text-anchor="end" fill="var(--text-muted)" font-size="10">${val}</text>`;
-  }
-
-  // X-axis labels (show ~8 labels max)
-  let xLabels = '';
-  const labelStep = Math.max(1, Math.floor(n / 8));
-  for (let i = 0; i < n; i += labelStep) {
-    const d = series[i].date.slice(5); // MM-DD
-    xLabels += `<text x="${x(i)}" y="${H - 5}" text-anchor="middle" fill="var(--text-muted)" font-size="10">${d}</text>`;
-  }
-
-  const openData = series.map((p) => p.open);
-  const idealData = series.map((p) => p.ideal ?? 0);
-  const closedData = series.map((p) => p.closed);
-
-  // Fill area under open line
-  const openArea =
-    `M${x(0).toFixed(1)},${y(0).toFixed(1)} ` +
-    openData.map((v, i) => `L${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ') +
-    ` L${x(n - 1).toFixed(1)},${y(0).toFixed(1)} Z`;
-
-  container.innerHTML = `
-    <svg viewBox="0 0 ${W} ${H}" class="burndown-svg">
-      ${gridLines}
-      <path d="${openArea}" fill="rgba(124,156,255,0.1)" />
-      ${polyline(idealData, 'var(--text-secondary)', true)}
-      ${polyline(closedData, 'var(--green-400)')}
-      ${polyline(openData, 'var(--accent)')}
-      ${xLabels}
-      <g transform="translate(${pad.left + 10}, ${pad.top + 10})">
-        <line x1="0" y1="0" x2="20" y2="0" stroke="var(--accent)" stroke-width="2" />
-        <text x="24" y="4" fill="var(--text-secondary)" font-size="10">剩餘 Open</text>
-        <line x1="0" y1="16" x2="20" y2="16" stroke="var(--green-400)" stroke-width="2" />
-        <text x="24" y="20" fill="var(--text-secondary)" font-size="10">已完成 Closed</text>
-          <line x1="0" y1="32" x2="20" y2="32" stroke="var(--text-secondary)" stroke-width="2" stroke-dasharray="6,4" />
-        <text x="24" y="36" fill="var(--text-secondary)" font-size="10">理想進度</text>
-      </g>
-    </svg>
-  `;
-
-  const pct = ms.total > 0 ? Math.round((ms.closed / ms.total) * 100) : 0;
-  statsDiv.innerHTML = `
-    <div class="burndown-stat"><span>總 Issue</span><strong>${ms.total}</strong></div>
-    <div class="burndown-stat"><span>已完成</span><strong class="text-green">${ms.closed}</strong></div>
-    <div class="burndown-stat"><span>剩餘</span><strong class="text-accent">${ms.open}</strong></div>
-    <div class="burndown-stat"><span>完成率</span><strong>${pct}%</strong></div>
-    <div class="burndown-stat"><span>到期日</span><strong>${ms.due_date ?? '-'}</strong></div>
-  `;
-}
-
 function renderBurndownChartSafe(ms: BurndownMilestone): void {
   const container = byId<HTMLDivElement>('burndown-chart');
   const statsDiv = byId<HTMLDivElement>('burndown-stats');
@@ -4479,8 +3794,6 @@ function renderWorkloadHeatmap(workload: WorkloadEntry[]): void {
       ${workload
         .map((w) => {
           const pct = (w.opened / maxOpened) * 100;
-          const hue =
-            w.overdue > 0 ? 0 : w.due_soon > 0 ? 35 : w.opened > maxOpened * 0.7 ? 0 : 220;
           const barColor =
             w.overdue > 0
               ? 'var(--red-400)'
@@ -4807,55 +4120,6 @@ function renderLifecycle(lc: LifecycleData): void {
 }
 
 /* ── Milestone Progress Overview ── */
-function renderMilestoneProgress(burndown: BurndownMilestone[]): void {
-  const container = byId<HTMLDivElement>('milestone-progress');
-  if (!burndown.length) {
-    container.innerHTML = '<div class="empty-state">尚無 Milestone 資料。</div>';
-    return;
-  }
-
-  // Sort: in-progress first (has open), then by due date
-  const sorted = [...burndown].sort((a, b) => {
-    if (a.open > 0 && b.open === 0) return -1;
-    if (a.open === 0 && b.open > 0) return 1;
-    return (a.due_date ?? '9999').localeCompare(b.due_date ?? '9999');
-  });
-
-  container.innerHTML = `
-    <div class="ms-progress-list">
-      ${sorted
-        .map((ms) => {
-          const pct = ms.total > 0 ? Math.round((ms.closed / ms.total) * 100) : 0;
-          const isComplete = ms.open === 0 && ms.total > 0;
-          const isOverdue = ms.due_date && new Date(ms.due_date) < new Date() && !isComplete;
-          const barColor = isComplete
-            ? 'var(--green-400)'
-            : isOverdue
-              ? 'var(--red-400)'
-              : 'var(--accent)';
-          const statusClass = isComplete ? 'complete' : isOverdue ? 'overdue' : 'active';
-          const dueText = ms.due_date ?? '-';
-          return `
-          <div class="ms-progress-item ${statusClass}">
-            <div class="ms-progress-header">
-              <span class="ms-progress-name" title="${escapeHtml(ms.milestone)}">${escapeHtml(ms.milestone)}</span>
-              <span class="ms-progress-pct">${pct}%</span>
-            </div>
-            <div class="ms-progress-bar-track">
-              <div class="ms-progress-bar-fill" style="width:${pct}%;background:${barColor}"></div>
-            </div>
-            <div class="ms-progress-meta">
-              <span>${ms.closed}/${ms.total} 完成</span>
-              <span>到期：${escapeHtml(dueText)}</span>
-            </div>
-          </div>
-        `;
-        })
-        .join('')}
-    </div>
-  `;
-}
-
 function renderMilestoneProgressSafe(burndown: BurndownMilestone[]): void {
   const container = byId<HTMLDivElement>('milestone-progress');
   if (!burndown.length) {
@@ -4964,174 +4228,6 @@ async function saveConfig(): Promise<void> {
   setStatus('設定已儲存', 'success');
 }
 
-// ── Daily Issue Briefing ────────────────────────────────────────────────────
-interface BriefingSettings {
-  enabled: boolean;
-  has_teams_webhook_url: boolean;
-  teams_webhook_url_masked: string;
-  send_time: string;
-  timezone: string;
-  workdays: number[];
-  updated_issue_window: string;
-  include_risks: boolean;
-  include_next_steps: boolean;
-  include_source_links: boolean;
-}
-
-interface BriefingResult {
-  ok: boolean;
-  date: string;
-  issue_count: number;
-  title: string;
-  message: string;
-  index_built_at: string | null;
-  mode: string;
-}
-
-interface BriefingHistoryItem {
-  at: string;
-  date: string;
-  trigger: string;
-  channel?: string;
-  ok: boolean;
-  issue_count: number;
-  mode: string;
-  status_code: number | null;
-  error: string | null;
-  index_built_at?: string | null;
-  title?: string;
-}
-
-function fillBriefingForm(settings: BriefingSettings): void {
-  const enabled = getById<HTMLInputElement>('briefing-enabled');
-  if (enabled) enabled.checked = Boolean(settings.enabled);
-
-  const webhook = getById<HTMLInputElement>('briefing-webhook');
-  if (webhook) webhook.value = ''; // never echo the secret; show status separately
-  const webhookStatus = getById<HTMLElement>('briefing-webhook-status');
-  if (webhookStatus) {
-    webhookStatus.textContent = settings.has_teams_webhook_url
-      ? `已設定：${settings.teams_webhook_url_masked}`
-      : '尚未設定';
-  }
-  const clear = getById<HTMLInputElement>('briefing-webhook-clear');
-  if (clear) clear.checked = false;
-
-  const sendTime = getById<HTMLInputElement>('briefing-send-time');
-  if (sendTime) sendTime.value = settings.send_time || '18:30';
-  const timezone = getById<HTMLInputElement>('briefing-timezone');
-  if (timezone) timezone.value = settings.timezone || 'Asia/Taipei';
-
-  const workdays = new Set(settings.workdays || []);
-  document
-    .querySelectorAll<HTMLInputElement>('#briefing-workdays input[data-workday]')
-    .forEach((box) => {
-      box.checked = workdays.has(Number(box.dataset.workday));
-    });
-
-  const risks = getById<HTMLInputElement>('briefing-include-risks');
-  if (risks) risks.checked = Boolean(settings.include_risks);
-  const nextSteps = getById<HTMLInputElement>('briefing-include-next-steps');
-  if (nextSteps) nextSteps.checked = Boolean(settings.include_next_steps);
-  const links = getById<HTMLInputElement>('briefing-include-links');
-  if (links) links.checked = Boolean(settings.include_source_links);
-}
-
-function readBriefingForm(): Record<string, unknown> {
-  const workdays: number[] = [];
-  document
-    .querySelectorAll<HTMLInputElement>('#briefing-workdays input[data-workday]')
-    .forEach((box) => {
-      if (box.checked) workdays.push(Number(box.dataset.workday));
-    });
-
-  const webhook = getById<HTMLInputElement>('briefing-webhook')?.value.trim() || '';
-  const clear = getById<HTMLInputElement>('briefing-webhook-clear')?.checked || false;
-
-  return {
-    enabled: getById<HTMLInputElement>('briefing-enabled')?.checked || false,
-    teams_webhook_url: webhook, // '' keeps the stored URL on the backend
-    clear_teams_webhook_url: clear,
-    send_time: getById<HTMLInputElement>('briefing-send-time')?.value || '18:30',
-    timezone: getById<HTMLInputElement>('briefing-timezone')?.value.trim() || 'Asia/Taipei',
-    workdays,
-    updated_issue_window: 'today',
-    include_risks: getById<HTMLInputElement>('briefing-include-risks')?.checked || false,
-    include_next_steps: getById<HTMLInputElement>('briefing-include-next-steps')?.checked || false,
-    include_source_links: getById<HTMLInputElement>('briefing-include-links')?.checked || false,
-  };
-}
-
-async function loadBriefingSettings(): Promise<void> {
-  const settings = await api<BriefingSettings>('/api/briefing/settings');
-  fillBriefingForm(settings);
-}
-
-async function saveBriefingSettings(): Promise<void> {
-  const payload = readBriefingForm();
-  const settings = await api<BriefingSettings>('/api/briefing/settings', 'POST', payload);
-  fillBriefingForm(settings);
-  showToast('Daily Briefing', '設定已儲存', 'success');
-}
-
-async function testBriefingWebhook(): Promise<void> {
-  const result = await api<{ ok: boolean; message: string }>(
-    '/api/briefing/test-teams',
-    'POST',
-    {},
-  );
-  showToast('Test Teams Webhook', result.message, result.ok ? 'success' : 'error');
-  void loadBriefingHistory();
-}
-
-async function previewBriefing(): Promise<void> {
-  const output = getById<HTMLTextAreaElement>('briefing-preview-output');
-  if (output) output.value = '產生預覽中…';
-  const result = await api<BriefingResult>('/api/briefing/preview', 'POST', {});
-  if (output) output.value = result.message;
-  showToast(
-    'Generate Preview',
-    `今日有更新的 Issue：${result.issue_count} 件（模式：${result.mode}）`,
-    'success',
-  );
-}
-
-async function sendBriefingNow(): Promise<void> {
-  const result = await api<{ ok: boolean; issue_count: number; message: string }>(
-    '/api/briefing/send-now',
-    'POST',
-    {},
-  );
-  showToast('Send Now', result.message, result.ok ? 'success' : 'error');
-  void loadBriefingHistory();
-}
-
-async function loadBriefingHistory(): Promise<void> {
-  const container = getById<HTMLElement>('briefing-history');
-  if (!container) return;
-  const data = await api<{ items: BriefingHistoryItem[] }>('/api/briefing/history');
-  const items = data.items || [];
-  if (!items.length) {
-    container.innerHTML = '<div class="briefing-history-empty">尚無發送紀錄。</div>';
-    return;
-  }
-  container.innerHTML = items
-    .map((item) => {
-      const when = fmtDate(item.at);
-      const dateLabel = item.date ? `${item.date}・` : '';
-      const detail = item.ok
-        ? `${item.trigger}・${dateLabel}${item.issue_count} 件・${item.mode || '-'}`
-        : `${item.trigger}・${escapeHtml(item.error || '失敗')}`;
-      return `
-        <div class="briefing-history-row">
-          <span class="dot ${item.ok ? 'ok' : 'fail'}"></span>
-          <span>${escapeHtml(when)}</span>
-          <span class="meta">${escapeHtml(detail)}</span>
-        </div>`;
-    })
-    .join('');
-}
-
 // ── Project Pulse (專案脈搏) ─────────────────────────────────────────────────
 interface PulseSchedule {
   id: string;
@@ -5235,6 +4331,11 @@ interface PulseHistoryItem {
   issue_count: number;
   ok: boolean;
   error_message: string;
+  report_title?: string;
+  report_message?: string;
+  report_mode?: string;
+  report_model?: string;
+  report_generated_at?: string;
   started_at: string;
   finished_at: string;
 }
@@ -5414,13 +4515,6 @@ async function pollPulseJob(
     if (job.status === 'completed' || job.status === 'failed') return job;
     await pulseAbortableDelay(1200, signal);
   }
-}
-
-function setPulseRowStatus(scheduleId: string, text: string): void {
-  const cell = document.querySelector<HTMLElement>(
-    `[data-pulse-id="${scheduleId}"] .pulse-lastrun`,
-  );
-  if (cell) cell.textContent = text;
 }
 
 function setPulseRowBusy(scheduleId: string, text: string): void {
@@ -5666,13 +4760,6 @@ function openPulseForm(schedule: PulseSchedule | null): void {
 
 function closePulseForm(): void {
   pulseOverlay('pulse-form-overlay', false);
-}
-
-function splitCsv(value: string): string[] {
-  return value
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function readPulseForm(): Record<string, unknown> {
@@ -5948,11 +5035,14 @@ function handlePulseRowAction(event: Event): void {
   else if (action === 'delete') void deletePulseSchedule(schedule).catch(handleError);
 }
 
+let pulseHistoryItems: PulseHistoryItem[] = [];
+
 async function loadPulseHistory(): Promise<void> {
   const container = getById<HTMLElement>('pulse-history');
   if (!container) return;
   const data = await api<{ items: PulseHistoryItem[] }>('/api/project-pulse/history');
   const items = data.items || [];
+  pulseHistoryItems = items;
   if (!items.length) {
     container.innerHTML = '<div class="briefing-history-empty">尚無執行紀錄。</div>';
     return;
@@ -5965,14 +5055,39 @@ async function loadPulseHistory(): Promise<void> {
       const detail = item.ok
         ? `${repo}・${runType}・${item.issue_count} 件`
         : `${repo}・${runType}・${escapeHtml(item.error_message || '失敗')}`;
+      // Only runs that actually produced a report can be opened.
+      const hasReport = Boolean((item.report_message || '').trim());
+      const cls = hasReport ? 'briefing-history-row is-clickable' : 'briefing-history-row';
+      const attrs = hasReport
+        ? ` role="button" tabindex="0" data-pulse-history-id="${escapeHtml(item.id)}"`
+        : '';
       return `
-        <div class="briefing-history-row">
+        <div class="${cls}"${attrs}>
           <span class="dot ${item.ok ? 'ok' : 'fail'}"></span>
           <span>${escapeHtml(when)}</span>
           <span class="meta">${escapeHtml(detail)}</span>
         </div>`;
     })
     .join('');
+}
+
+function openPulseHistoryEntry(id: string): void {
+  const item = pulseHistoryItems.find((it) => it.id === id);
+  if (!item || !(item.report_message || '').trim()) return;
+  openPulsePreview({
+    ok: item.ok,
+    schedule_id: item.schedule_id,
+    repo_id: item.repo_id,
+    date: item.report_generated_at || item.finished_at || item.started_at,
+    issue_count: item.issue_count,
+    title: item.report_title || '',
+    message: item.report_message || '',
+    index_built_at: null,
+    mode: item.report_mode || '',
+    generated_at: item.report_generated_at || item.finished_at || null,
+    requested_model: null,
+    model: item.report_model || null,
+  });
 }
 
 async function loadProjectPulseView(): Promise<void> {
@@ -6571,10 +5686,28 @@ function updateChatLauncherVisibility(): void {
   getById<HTMLElement>('chat-fab')?.classList.toggle('hidden', hidden);
 }
 
+// The chat reply is only actually on-screen when the full assistant view is
+// active or the floating dock is open. Otherwise an arriving answer is unseen.
+function isChatSurfaceVisible(): boolean {
+  return state.currentView === 'assistant' || state.chatDockOpen;
+}
+
+// Surface an unread hint on the launcher FAB and the sidebar "AI 助理" entry so
+// the user knows a reply arrived while they were elsewhere. Cleared when they
+// open the dock or the assistant page.
+function setChatUnread(unread: boolean): void {
+  state.chatUnread = unread;
+  getById<HTMLElement>('chat-fab')?.classList.toggle('has-unread', unread);
+  document
+    .querySelector<HTMLElement>('[data-view-target="assistant"]')
+    ?.classList.toggle('has-unread', unread);
+}
+
 function openChatDock(): void {
   mountChatSurfaceTo('chat-dock-body');
   getById<HTMLElement>('chat-dock')?.classList.add('open');
   state.chatDockOpen = true;
+  setChatUnread(false);
   updateChatLauncherVisibility();
   renderRagStatusBadge();
   renderRagQuestionState();
@@ -6660,11 +5793,13 @@ function initChat(): void {
 function wireSuggestionBtns(container: HTMLElement): void {
   container.querySelectorAll('.chat-suggestion-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
+      // Prefill the input and let the user review/edit before sending, rather
+      // than firing the question immediately on click.
       const input = document.getElementById('chat-input') as HTMLInputElement;
-      if (input) {
-        input.value = btn.textContent || '';
-        sendChatMessage(input);
-      }
+      if (!input || input.disabled) return;
+      input.value = (btn.textContent || '').trim();
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
     });
   });
 }
@@ -6874,6 +6009,13 @@ async function sendChatMessage(input: HTMLInputElement): Promise<void> {
       result.retrieval_mode,
       requestedModel,
     );
+
+    // If the user navigated away or collapsed the dock while waiting, the reply
+    // is now off-screen — flag it on the FAB/sidebar and nudge with a toast.
+    if (!isChatSurfaceVisible()) {
+      setChatUnread(true);
+      showToast('AI 助理已回覆', '點右下角對話框或側邊欄「AI 助理」查看回答', 'success');
+    }
   } catch (err: any) {
     typingEl.remove();
     const errMsg = err?.message || '未知錯誤';
@@ -7454,6 +6596,19 @@ function wireEvents(): void {
   bind<HTMLButtonElement>('pulse-history-refresh', 'click', () =>
     loadPulseHistory().catch(handleError),
   );
+  getById<HTMLElement>('pulse-history')?.addEventListener('click', (event) => {
+    const row = (event.target as HTMLElement).closest<HTMLElement>('[data-pulse-history-id]');
+    if (row?.dataset.pulseHistoryId) openPulseHistoryEntry(row.dataset.pulseHistoryId);
+  });
+  getById<HTMLElement>('pulse-history')?.addEventListener('keydown', (event) => {
+    const key = (event as KeyboardEvent).key;
+    if (key !== 'Enter' && key !== ' ') return;
+    const row = (event.target as HTMLElement).closest<HTMLElement>('[data-pulse-history-id]');
+    if (row?.dataset.pulseHistoryId) {
+      event.preventDefault();
+      openPulseHistoryEntry(row.dataset.pulseHistoryId);
+    }
+  });
   getById<HTMLAnchorElement>('pulse-webhook-guide')?.addEventListener('click', (event) => {
     event.preventDefault();
     void window.trackerBridge.openPath('https://make.powerautomate.com/');

@@ -12,8 +12,9 @@ string (an exception's text can echo the URL it failed to reach).
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta, timezone
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests

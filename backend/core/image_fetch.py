@@ -8,12 +8,12 @@
 
 from __future__ import annotations
 
-import re
 import base64
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse, quote
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -163,11 +163,9 @@ def download_images(
     verify_ssl = getattr(client, "verify_ssl", True)
     authed_session = getattr(client, "session", None)
 
-    key = 0
-    for note_index, url in items:
-        if key >= max_count:
+    for key, (note_index, url) in enumerate(items, start=1):
+        if key > max_count:
             break
-        key += 1
         asset = ImageAsset(key=key, note_index=note_index, url=url)
         try:
             host = urlparse(url).netloc.lower()

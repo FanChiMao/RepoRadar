@@ -73,4 +73,5 @@ def set_job(job_id: str, values: dict[str, Any]) -> None:
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:
-    return _load().get("jobs", {}).get(job_id)
+    with _LOCK:
+        return _load().get("jobs", {}).get(job_id)
