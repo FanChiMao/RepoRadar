@@ -1,5 +1,9 @@
 # Repo Radar
 
+[![CI](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml/badge.svg)](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml)
+[![latest release](https://img.shields.io/github/v/release/FanChiMao/RepoRadar?label=latest%20release)](https://github.com/FanChiMao/RepoRadar/releases/latest)
+[![codecov](https://codecov.io/gh/FanChiMao/RepoRadar/graph/badge.svg)](https://codecov.io/gh/FanChiMao/RepoRadar)
+
 Repo Radar 是一套 Electron 桌面應用程式，使用 partial-based HTML/CSS/TypeScript 前端與 Python FastAPI 後端，集中同步、分析與彙整 GitLab 或 GitHub Issues。
 
 產品名稱仍為 **Repo Radar**，但目前支援 GitLab 與 GitHub Issue Provider。一次只能啟用一個 provider 與一個 project/repository，切換來源時會清除 Issue 與 RAG cache，避免不同來源資料混用。
@@ -86,15 +90,21 @@ Electron 啟動後會執行 loopback FastAPI；health endpoint 為 `http://127.0
 ## 驗證
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s backend\tests -v
+# 測試（61 個 Python tests）與覆蓋率
+.\.venv\Scripts\python.exe -m pytest backend\tests
+.\.venv\Scripts\python.exe -m pytest backend\tests --cov --cov-report=term   # 目前 source 覆蓋率約 45%
+
+# Lint（前端 ESLint + 後端 Ruff）
+npm.cmd run lint
+
+# 格式檢查（Prettier + Black）
+npm.cmd run format:check
+
+# Build
 npm.cmd run build:ts
-.\.venv\Scripts\python.exe -m compileall -q backend
-.\.venv\Scripts\python.exe -m black --check backend
-npx.cmd prettier --check README.md "docs/**/*.md" frontend/scripts/README.md package.json
-git diff --check
 ```
 
-目前共有 13 個 Python tests。GitHub Actions 目前只負責 build/release，尚未執行 Python tests 或格式檢查。
+GitHub Actions（`.github/workflows/main.yml`）在每次 push / PR 會跑格式檢查 → ESLint / Ruff lint → TypeScript / Electron build。正式 Release 僅在 push `v*` tag 時由 `release.yml` 發布。
 
 ## 建置
 
