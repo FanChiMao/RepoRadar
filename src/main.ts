@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, safeStorage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { spawn, ChildProcess } from 'child_process';
 import * as http from 'http';
 
@@ -18,6 +19,34 @@ type ExternalLinkPreferences = {
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
+
+// Per-launch token shared with the backend so other local processes cannot
+// drive the loopback API. Regenerated every launch; never persisted.
+const SESSION_TOKEN = crypto.randomBytes(32).toString('hex');
+
+// Loads (or creates) a random data-encryption key, kept encrypted at rest via
+// the OS keyring through Electron safeStorage. Returns the base64 raw key to
+// hand to the backend, or null when safeStorage is unavailable (the backend
+// then stores secrets as plaintext, matching the previous behaviour).
+function ensureSecretKey(dataDir: string): string | null {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) {
+      console.warn('[secrets] safeStorage unavailable; secrets stored as plaintext');
+      return null;
+    }
+    const keyPath = path.join(dataDir, 'secret.key');
+    if (fs.existsSync(keyPath)) {
+      const encrypted = Buffer.from(fs.readFileSync(keyPath, 'utf-8'), 'base64');
+      return safeStorage.decryptString(encrypted);
+    }
+    const rawKey = crypto.randomBytes(32).toString('base64');
+    fs.writeFileSync(keyPath, safeStorage.encryptString(rawKey).toString('base64'), 'utf-8');
+    return rawKey;
+  } catch (error) {
+    console.warn('[secrets] failed to load encryption key; using plaintext', error);
+    return null;
+  }
+}
 
 function externalLinkPreferencesPath(): string {
   return path.join(app.getPath('userData'), 'external-link-preferences.json');
@@ -427,13 +456,20 @@ function startBackend(): Promise<void> {
       );
     }
 
+    const secretKey = ensureSecretKey(dataDir);
+    const backendEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      REPO_RADAR_DATA_DIR: dataDir,
+      REPO_RADAR_SESSION_TOKEN: SESSION_TOKEN,
+    };
+    if (secretKey) {
+      backendEnv.REPO_RADAR_SECRET_KEY = secretKey;
+    }
+
     backendProcess = spawn(command, args, {
       cwd: root,
       stdio: 'pipe',
-      env: {
-        ...process.env,
-        REPO_RADAR_DATA_DIR: dataDir,
-      },
+      env: backendEnv,
     });
 
     backendProcess.stdout?.on('data', (data: any) => {
@@ -526,6 +562,8 @@ ipcMain.handle('report:exportPdf', async (_event, htmlContent: string) => {
 });
 
 ipcMain.handle('app:getVersion', async () => app.getVersion());
+
+ipcMain.handle('app:getSessionToken', async () => SESSION_TOKEN);
 
 bootstrap().catch((error) => {
   console.error(error);

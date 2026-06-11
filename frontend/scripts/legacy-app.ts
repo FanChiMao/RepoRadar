@@ -1404,15 +1404,31 @@ function getDeliveryHighlight(issue: IssueItem): { kind: string; label: string; 
   return { kind: 'open', label: '目前狀態', value: '開啟中' };
 }
 
+// The loopback backend authenticates every request with a per-launch token
+// provided by the Electron main process. Fetched once and cached for the
+// session; resolves to '' outside Electron so plain browser use still works.
+let sessionTokenPromise: Promise<string> | null = null;
+function getSessionToken(): Promise<string> {
+  if (!sessionTokenPromise) {
+    sessionTokenPromise = Promise.resolve(window.trackerBridge?.getSessionToken?.() ?? '');
+  }
+  return sessionTokenPromise;
+}
+
 async function api<T>(
   path: string,
   method = 'GET',
   body?: unknown,
   options?: { signal?: AbortSignal },
 ): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = await getSessionToken();
+  if (token) {
+    headers['X-Session-Token'] = token;
+  }
   const response = await fetch(`http://127.0.0.1:8765${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
     signal: options?.signal,
   });

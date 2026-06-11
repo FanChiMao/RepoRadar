@@ -3,6 +3,7 @@ interface TrackerBridge {
   openPath: (filePath: string) => Promise<boolean>;
   exportPdf: (html: string) => Promise<string | null>;
   getAppVersion: () => Promise<string>;
+  getSessionToken: () => Promise<string>;
 }
 
 declare global {

@@ -21,6 +21,7 @@ from .config_store import (
     _normalize_workdays,
     data_dir,
 )
+from .secrets import decrypt_secret, encrypt_secret
 from .utils import read_json, write_json
 
 SCHEDULES_PATH = data_dir() / "ai_report_schedules.json"
@@ -203,7 +204,15 @@ def load_schedules() -> list[dict[str, Any]]:
     data = read_json(SCHEDULES_PATH, [])
     if not isinstance(data, list):
         return []
-    return [normalize_schedule(item) | _identity(item) for item in data]
+    schedules: list[dict[str, Any]] = []
+    for item in data:
+        if isinstance(item, dict) and "teams_webhook_url" in item:
+            item = {
+                **item,
+                "teams_webhook_url": decrypt_secret(item["teams_webhook_url"]),
+            }
+        schedules.append(normalize_schedule(item) | _identity(item))
+    return schedules
 
 
 def _identity(item: dict[str, Any]) -> dict[str, Any]:
@@ -221,7 +230,20 @@ def _identity(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _write_schedules(schedules: list[dict[str, Any]]) -> None:
-    write_json(SCHEDULES_PATH, schedules)
+    # Encrypt webhook URLs at rest without mutating the in-memory schedules that
+    # callers return to the API as plaintext.
+    persisted = [
+        (
+            {
+                **schedule,
+                "teams_webhook_url": encrypt_secret(schedule.get("teams_webhook_url")),
+            }
+            if isinstance(schedule, dict)
+            else schedule
+        )
+        for schedule in schedules
+    ]
+    write_json(SCHEDULES_PATH, persisted)
 
 
 def get_schedule(schedule_id: str) -> dict[str, Any] | None:
