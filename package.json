@@ -6,7 +6,12 @@
   "author": "Chi-Mao Fan, Wes Chen",
   "license": "MIT",
   "scripts": {
-    "build:ts": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.frontend.json",
+    "build:frontend": "node esbuild.config.mjs",
+    "build:ts": "npm run typecheck && npm run build:frontend",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "lint": "npm run lint:ts && npm run lint:py",
     "lint:ts": "eslint \"src/**/*.ts\" \"frontend/**/*.ts\"",
     "lint:ts:fix": "eslint \"src/**/*.ts\" \"frontend/**/*.ts\" --fix",
@@ -21,14 +26,17 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@vitest/coverage-v8": "^4.1.8",
     "electron": "^41.2.2",
     "electron-builder": "^26.8.1",
+    "esbuild": "^0.28.0",
     "eslint": "^9.39.4",
     "globals": "^17.6.0",
     "png2icons": "^2.0.1",
     "prettier": "^3.8.3",
     "typescript": "^5.8.3",
-    "typescript-eslint": "^8.61.0"
+    "typescript-eslint": "^8.61.0",
+    "vitest": "^4.1.8"
   },
   "build": {
     "appId": "com.openai.reporadar",

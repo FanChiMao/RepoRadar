@@ -45,14 +45,26 @@ jobs:
       - name: Lint backend (Ruff)
         run: python -m ruff check backend
 
-      - name: Run tests with coverage
+      - name: Run backend tests with coverage
         run: python -m pytest backend/tests --cov --cov-report=xml
 
-      - name: Upload coverage to Codecov
+      - name: Upload backend coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
+          flags: backend
+          fail_ci_if_error: false
+
+      - name: Run frontend tests with coverage
+        run: npm run test:coverage
+
+      - name: Upload frontend coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/frontend/lcov.info
+          flags: frontend
           fail_ci_if_error: false
 
       - name: Build TypeScript

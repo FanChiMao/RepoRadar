@@ -95,8 +95,9 @@ from core.report_service import (
 )
 from core.scheduler import TrackerScheduler
 from core.utils import parse_dt, read_json, utc_now, write_json
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 
@@ -1342,6 +1343,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Per-launch session token shared between the Electron main process and the
+# renderer. The loopback API has no other authentication, so when a token is
+# provided we require it on every request to stop other local processes from
+# driving the API. When unset (raw `uvicorn` dev runs, tests) enforcement is
+# skipped so those paths keep working unchanged.
+SESSION_TOKEN = os.environ.get("REPO_RADAR_SESSION_TOKEN", "").strip()
+# /api/health is probed by the Electron readiness check before the renderer can
+# learn the token, so it stays open.
+SESSION_TOKEN_EXEMPT_PATHS = {"/api/health"}
+
+
+@app.middleware("http")
+async def require_session_token(request: Request, call_next: Callable) -> Any:
+    if (
+        SESSION_TOKEN
+        and request.method != "OPTIONS"
+        and request.url.path not in SESSION_TOKEN_EXEMPT_PATHS
+        and request.headers.get("X-Session-Token") != SESSION_TOKEN
+    ):
+        return JSONResponse(status_code=401, content={"detail": "Invalid session."})
+    return await call_next(request)
 
 
 @app.get("/api/health")

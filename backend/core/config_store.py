@@ -5,6 +5,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .secrets import decrypt_secret, encrypt_secret
 from .utils import read_json, write_json
 
 # 載入 backend/.env，讓 Azure LLM 等機密透過環境變數提供（該檔已被 .gitignore 排除）。
@@ -93,8 +94,25 @@ def normalize_project_ref_history(
     return items[:limit]
 
 
+def _decrypt_config_secrets(raw: Any) -> Any:
+    """Decrypt secret fields read from disk so the rest of the app works with
+    plaintext. Tolerates non-dict input and legacy flat layouts."""
+    if not isinstance(raw, dict):
+        return raw
+    connections = raw.get("connections")
+    if isinstance(connections, dict):
+        for connection in connections.values():
+            if isinstance(connection, dict) and "token" in connection:
+                connection["token"] = decrypt_secret(connection.get("token"))
+    if "token" in raw:  # legacy flat GitLab token
+        raw["token"] = decrypt_secret(raw.get("token"))
+    if "gemini_api_key" in raw:
+        raw["gemini_api_key"] = decrypt_secret(raw.get("gemini_api_key"))
+    return raw
+
+
 def load_config() -> dict[str, Any]:
-    return _normalize_config(read_json(CONFIG_PATH, {}))
+    return _normalize_config(_decrypt_config_secrets(read_json(CONFIG_PATH, {})))
 
 
 def save_config(payload: dict[str, Any]) -> dict[str, Any]:
@@ -217,6 +235,11 @@ def _persistable_config(config: dict[str, Any]) -> dict[str, Any]:
     payload = deepcopy(config)
     for key in ("gitlab_url", "token", "project_ref", "project_ref_history"):
         payload.pop(key, None)
+    # Encrypt secrets at rest (no-op when no key is configured).
+    for connection in (payload.get("connections") or {}).values():
+        if isinstance(connection, dict):
+            connection["token"] = encrypt_secret(connection.get("token"))
+    payload["gemini_api_key"] = encrypt_secret(payload.get("gemini_api_key"))
     return payload
 
 
@@ -294,7 +317,10 @@ def _normalize_briefing(raw: Any) -> dict[str, Any]:
 
 
 def load_briefing_settings() -> dict[str, Any]:
-    return _normalize_briefing(read_json(DAILY_BRIEFING_PATH, {}))
+    raw = read_json(DAILY_BRIEFING_PATH, {})
+    if isinstance(raw, dict) and "teams_webhook_url" in raw:
+        raw["teams_webhook_url"] = decrypt_secret(raw.get("teams_webhook_url"))
+    return _normalize_briefing(raw)
 
 
 def save_briefing_settings(payload: dict[str, Any]) -> dict[str, Any]:
@@ -312,7 +338,9 @@ def save_briefing_settings(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         merged["teams_webhook_url"] = incoming_url
 
-    write_json(DAILY_BRIEFING_PATH, merged)
+    persisted = deepcopy(merged)
+    persisted["teams_webhook_url"] = encrypt_secret(persisted.get("teams_webhook_url"))
+    write_json(DAILY_BRIEFING_PATH, persisted)
     return merged
 
 

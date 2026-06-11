@@ -80,6 +80,39 @@ class ConfigStoreTests(unittest.TestCase):
             "github:https://github.com:microsoft/markitdown", source_identity(saved)
         )
 
+    def test_secrets_encrypted_at_rest_when_key_present(self) -> None:
+        import base64
+
+        path = self.runtime_dir() / "config.json"
+        key = base64.b64encode(b"k" * 32).decode("ascii")
+        with (
+            patch.object(config_store, "CONFIG_PATH", path),
+            patch.dict("os.environ", {"REPO_RADAR_SECRET_KEY": key}),
+        ):
+            config_store.save_config(
+                {
+                    "active_provider": "gitlab",
+                    "connections": {
+                        "gitlab": {
+                            "base_url": "https://gitlab.example",
+                            "token": "glpat-secret",
+                            "project_ref": "group/repo",
+                        }
+                    },
+                    "gemini_api_key": "gemini-secret",
+                }
+            )
+            on_disk = path.read_text(encoding="utf-8")
+            reloaded = config_store.load_config()
+
+        # The raw file must not contain plaintext secrets.
+        self.assertNotIn("glpat-secret", on_disk)
+        self.assertNotIn("gemini-secret", on_disk)
+        self.assertIn("enc:v1:", on_disk)
+        # Loading transparently decrypts back to plaintext.
+        self.assertEqual("glpat-secret", get_connection(reloaded)["token"])
+        self.assertEqual("gemini-secret", reloaded["gemini_api_key"])
+
 
 if __name__ == "__main__":
     unittest.main()
