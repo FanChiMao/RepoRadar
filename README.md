@@ -8,7 +8,8 @@
 
 [![CI](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml/badge.svg)](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml)
 [![latest](https://img.shields.io/github/v/release/FanChiMao/RepoRadar?label=latest%20release)](https://github.com/FanChiMao/RepoRadar/releases/latest)
-[![codecov](https://codecov.io/gh/FanChiMao/RepoRadar/graph/badge.svg)](https://codecov.io/gh/FanChiMao/RepoRadar)
+[![Backend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=backend&logo=python&logoColor=white&label=Backend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=backend)
+[![Frontend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=frontend&logo=vite&logoColor=white&label=Frontend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=frontend)
 [![Electron](https://img.shields.io/badge/Electron-2C2E3B?logo=electron&logoColor=9FEAF9)](https://www.electronjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
@@ -88,6 +89,8 @@ Electron 啟動後會執行 loopback FastAPI;health endpoint 為 `http://127.0.0
 - `frontend/`:partial-based UI、styles 與 TypeScript renderer。
 - `backend/`:FastAPI、Issue Provider、GitLab/GitHub clients、RAG、分析、報表與 Arrange。
 - `backend/tests/`:provider、normalizer、config migration 與 API integration tests。
+- `frontend/scripts/lib/`:從 renderer 抽出的純函式工具(日期、格式化、解析),供 unit test 使用。
+- `frontend/tests/`:以 Vitest 撰寫的前端 unit tests。
 - `docs/`:產品、架構、API、安全、品質與操作文件。
 
 ## 🔐 資料與 Secrets
@@ -105,9 +108,13 @@ Electron 啟動後會執行 loopback FastAPI;health endpoint 為 `http://127.0.0
 ## ✅ 驗證
 
 ```powershell
-# 測試(61 個 Python tests)與覆蓋率
+# 後端測試(Python / pytest)與覆蓋率
 .\.venv\Scripts\python.exe -m pytest backend\tests
 .\.venv\Scripts\python.exe -m pytest backend\tests --cov --cov-report=term   # 目前 source 覆蓋率約 45%
+
+# 前端測試(TypeScript / Vitest)與覆蓋率
+npm.cmd test
+npm.cmd run test:coverage   # 覆蓋率報告輸出至 coverage/frontend/(lcov + 終端摘要)
 
 # Lint(前端 ESLint + 後端 Ruff)
 npm.cmd run lint
@@ -119,7 +126,7 @@ npm.cmd run format:check
 npm.cmd run build:ts
 ```
 
-GitHub Actions(`.github/workflows/main.yml`)在每次 push / PR 會跑格式檢查 → ESLint / Ruff lint → TypeScript / Electron build。正式 Release 僅在 push `v*` tag 時由 `release.yml` 發布。
+GitHub Actions(`.github/workflows/main.yml`)在每次 push / PR 會跑格式檢查 → ESLint / Ruff lint → 後端 pytest 與前端 Vitest(各自上傳 `backend` / `frontend` flag 覆蓋率到 Codecov)→ TypeScript / Electron build。正式 Release 僅在 push `v*` tag 時由 `release.yml` 發布。
 
 ## 📦 建置
 

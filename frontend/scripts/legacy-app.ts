@@ -1,4 +1,25 @@
-﻿type AppConfig = {
+﻿import {
+  clampUiScale,
+  fmtDate,
+  fmtShortDate,
+  fmtFileSize,
+  toSafeHref,
+  isArrangeFilterUrl,
+  isDiscussionTableDelimiter,
+  parseDiscussionTableRow,
+} from './lib/format';
+import {
+  startOfDay,
+  getStartOfWeek,
+  getIsoWeekValue,
+  parseIsoWeekValue,
+  daysBetween,
+  formatGanttDate,
+  mergeEarlierDate,
+  mergeLaterDate,
+} from './lib/dates';
+
+type AppConfig = {
   active_provider: 'gitlab' | 'github';
   connections: Record<
     'gitlab' | 'github',
@@ -453,10 +474,6 @@ function setStatus(text: string, type: 'idle' | 'success' | 'warn' | 'error' = '
     panel.classList.remove('status-idle', 'status-success', 'status-warn', 'status-error');
     panel.classList.add(`status-${type}`);
   }
-}
-
-function clampUiScale(value: number): number {
-  return Math.min(120, Math.max(90, Math.round(value / 5) * 5));
 }
 
 function clampSidebarWidth(value: number): number {
@@ -1015,27 +1032,6 @@ function setActionButtonsEnabled(enabled: boolean): void {
   }
 }
 
-function fmtDate(value: string | null | undefined): string {
-  if (!value) return '-';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString('zh-TW', { hour12: false });
-}
-
-function fmtShortDate(value: string | null | undefined): string {
-  if (!value) return '-';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return `${d.getMonth() + 1}/${d.getDate()}`;
-}
-
-function fmtFileSize(bytes: number | null | undefined): string {
-  const size = Number(bytes) || 0;
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function escapeHtml(text: string): string {
   const div = document.createElement('div');
   div.textContent = text;
@@ -1150,57 +1146,6 @@ function renderProjectRefHistory(currentValue: string, history: string[]): void 
   */
 }
 
-function getStartOfWeek(value: Date): Date {
-  const date = startOfDay(value) ?? new Date(value);
-  const day = date.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  date.setDate(date.getDate() + diff);
-  return date;
-}
-
-function getIsoWeekValue(date: Date): string {
-  const target = getStartOfWeek(date);
-  const thursday = new Date(target);
-  thursday.setDate(target.getDate() + 3);
-  const firstThursday = new Date(thursday.getFullYear(), 0, 4);
-  const firstWeekStart = getStartOfWeek(firstThursday);
-  const week = Math.round((thursday.getTime() - firstWeekStart.getTime()) / 86400000 / 7) + 1;
-  return `${thursday.getFullYear()}-W${String(week).padStart(2, '0')}`;
-}
-
-function parseIsoWeekValue(value: string): Date | null {
-  const match = /^(\d{4})-W(\d{2})$/.exec(value);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const week = Number(match[2]);
-  if (!Number.isFinite(year) || !Number.isFinite(week) || week < 1 || week > 53) return null;
-
-  const jan4 = new Date(year, 0, 4);
-  const firstWeekStart = getStartOfWeek(jan4);
-  const monday = new Date(firstWeekStart);
-  monday.setDate(firstWeekStart.getDate() + (week - 1) * 7);
-  monday.setHours(0, 0, 0, 0);
-  return monday;
-}
-
-function startOfDay(value: Date | string | null | undefined): Date | null {
-  if (!value) return null;
-  const date = value instanceof Date ? new Date(value) : new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  date.setHours(0, 0, 0, 0);
-  return date;
-}
-
-function daysBetween(left: Date, right: Date): number {
-  return Math.round((left.getTime() - right.getTime()) / 86400000);
-}
-
-function formatGanttDate(value: Date | string | null | undefined): string {
-  const date = startOfDay(value);
-  if (!date) return '-';
-  return `${date.getMonth() + 1}/${date.getDate()}`;
-}
-
 type MilestoneSortEntry = {
   name: string;
   start: Date | null;
@@ -1218,18 +1163,6 @@ function compareMilestoneEntries(left: MilestoneSortEntry, right: MilestoneSortE
   if (leftSecondary !== rightSecondary) return leftSecondary - rightSecondary;
 
   return left.name.localeCompare(right.name, 'zh-Hant');
-}
-
-function mergeEarlierDate(current: Date | null, candidate: Date | null): Date | null {
-  if (!candidate) return current;
-  if (!current) return candidate;
-  return candidate.getTime() < current.getTime() ? candidate : current;
-}
-
-function mergeLaterDate(current: Date | null, candidate: Date | null): Date | null {
-  if (!candidate) return current;
-  if (!current) return candidate;
-  return candidate.getTime() > current.getTime() ? candidate : current;
 }
 
 function formatMilestoneOptionLabel(milestone: MilestoneSortEntry): string {
@@ -2805,10 +2738,6 @@ function initViewNavigation(): void {
   });
 }
 
-function isArrangeFilterUrl(value: string): boolean {
-  return /\/-\/issues\?/.test(value.trim());
-}
-
 function getArrangeInputLines(): string[] {
   return (byId<HTMLTextAreaElement>('arrange-url-list').value || '')
     .split(/\r?\n/)
@@ -3041,23 +2970,6 @@ function formatArrangeHistoryMarkdown(text: string): string {
   return escaped;
 }
 
-function toSafeHref(url: string): string {
-  const trimmed = (url || '').trim();
-  const normalized = trimmed.toLowerCase();
-  if (
-    normalized.startsWith('http://') ||
-    normalized.startsWith('https://') ||
-    normalized.startsWith('mailto:') ||
-    normalized.startsWith('/') ||
-    normalized.startsWith('./') ||
-    normalized.startsWith('../') ||
-    normalized.startsWith('#')
-  ) {
-    return trimmed;
-  }
-  return '#';
-}
-
 function formatDiscussionInlineMarkdown(escaped: string): string {
   return escaped
     .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt, url) => {
@@ -3071,26 +2983,6 @@ function formatDiscussionInlineMarkdown(escaped: string): string {
     })
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/`([^`]+)`/g, '<code>$1</code>');
-}
-
-function isDiscussionTableDelimiter(line: string): boolean {
-  const trimmed = line.trim();
-  if (!trimmed.includes('|')) return false;
-  const cells = trimmed
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => cell.trim());
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function parseDiscussionTableRow(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split('|')
-    .map((cell) => cell.trim());
 }
 
 function buildDiscussionTableHtml(lines: string[]): string {
