@@ -10,9 +10,7 @@
 [![latest](https://img.shields.io/github/v/release/FanChiMao/RepoRadar?label=latest%20release)](https://github.com/FanChiMao/RepoRadar/releases/latest)
 [![Backend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=backend&logo=python&logoColor=white&label=Backend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=backend)
 [![Frontend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=frontend&logo=vite&logoColor=white&label=Frontend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=frontend)
-[![Electron](https://img.shields.io/badge/Electron-2C2E3B?logo=electron&logoColor=9FEAF9)](https://www.electronjs.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+
 
 </div>
 
