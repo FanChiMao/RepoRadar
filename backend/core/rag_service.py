@@ -181,7 +181,7 @@ def _issue_cache_signature(raw_issue: dict[str, Any], issue: dict[str, Any]) -> 
     }
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     # 僅作為 chunk 內容指紋 / 快取鍵，非密碼學用途。
-    return hashlib.sha1(serialized.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _base_metadata(issue: dict[str, Any], **overrides: Any) -> dict[str, Any]:

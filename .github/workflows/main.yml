@@ -1,6 +1,6 @@
 # .github/workflows/ci.yml
 
-name: CI
+name: CI - Build and Test
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Setup Python
@@ -69,14 +69,3 @@ jobs:
 
       - name: Build TypeScript
         run: npm run build:ts
-
-      - name: Build Electron app
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: npm run dist -- --publish never
-
-      - name: Upload release artifacts
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: repo-radar-release
-          path: release/

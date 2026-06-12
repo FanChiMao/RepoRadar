@@ -11,7 +11,6 @@
 [![Backend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=backend&logo=python&logoColor=white&label=Backend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=backend)
 [![Frontend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=frontend&logo=vite&logoColor=white&label=Frontend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=frontend)
 
-
 </div>
 
 ---

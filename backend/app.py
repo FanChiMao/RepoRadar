@@ -838,9 +838,11 @@ def prepare_note_images(
     if max_count <= 0:
         return discussions, []
 
-    issue_slug = f"{(issue.get('source_ref') or 'repo')}_{issue.get('iid')}".replace(
-        "/", "_"
-    )
+    try:
+        issue_iid = int(issue.get("iid") or 0)
+    except (TypeError, ValueError):
+        issue_iid = 0
+    issue_slug = f"issue_{issue_iid}"
     dest_dir = ARRANGE_IMAGE_DIR / f"{issue_slug}_{utc_now().strftime('%Y%m%d_%H%M%S')}"
     items = [(flat[i][0], resolved_urls[i]) for i in range(len(flat))]
     assets = download_images(
@@ -903,10 +905,10 @@ def prepare_note_images(
 def load_arrange_images_for_url(url: str) -> list[ImageAsset]:
     """供 /api/arrange/llm 兩步流程：依 issue url 重新載回最近一次下載的圖片。"""
     try:
-        provider_name, base_url, project_ref, issue_iid = parse_issue_source_url(url)
+        _provider_name, _base_url, _project_ref, issue_iid = parse_issue_source_url(url)
     except Exception:  # noqa: BLE001
         return []
-    issue_slug = f"{project_ref}_{issue_iid}".replace("/", "_")
+    issue_slug = f"issue_{int(issue_iid)}"
     if not ARRANGE_IMAGE_DIR.exists():
         return []
     candidates = sorted(

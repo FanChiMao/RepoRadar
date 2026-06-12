@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
 from datetime import datetime
@@ -424,16 +425,17 @@ def build_arrange_archive_filename(
     extension: str = "md",
     now: datetime | None = None,
 ) -> str:
-    _base_url, project_ref, issue_iid = parse_issue_url(url)
-    repo_name = _sanitize_archive_part(_archive_repo_name(project_ref))
-    item_number = _sanitize_archive_part(str(issue_iid))
+    _base_url, _project_ref, issue_iid = parse_issue_url(url)
+    item_number = str(int(issue_iid))
     timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    suffix = (
-        "scrape"
-        if kind == "scrape"
-        else _sanitize_archive_part(model_name or "unknown-model")
-    )
-    return f"{repo_name}_{item_number}_{suffix}_{timestamp}.{extension}"
+    extension = extension if re.fullmatch(r"[a-z0-9]{1,8}", extension) else "md"
+    suffix = "scrape"
+    if kind != "scrape":
+        model_digest = hashlib.sha256(
+            (model_name or "unknown-model").encode("utf-8")
+        ).hexdigest()[:12]
+        suffix = f"model-{model_digest}"
+    return f"issue_{item_number}_{suffix}_{timestamp}.{extension}"
 
 
 def save_arrange_output(

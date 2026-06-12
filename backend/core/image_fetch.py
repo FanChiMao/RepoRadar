@@ -9,15 +9,11 @@
 from __future__ import annotations
 
 import base64
-import ipaddress
 import re
-import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urljoin, urlparse
-
-import requests
+from urllib.parse import quote, urlparse
 
 # markdown ![alt](url "title") 與 HTML <img src="url">
 # 注意：alt 與 url 量詞用 possessive（*+ / ++）避免在 '![](' 大量重複時的多項式回溯（ReDoS）。
@@ -148,66 +144,6 @@ def _safe_ext_from_media_type(media_type: str) -> str:
     return "." + sub if re.fullmatch(r"[a-z0-9]{1,8}", sub) else ".png"
 
 
-def _is_safe_public_url(url: str) -> bool:
-    """SSRF 防護：僅允許 http(s) 且主機解析後全部為公開位址。
-
-    阻擋 loopback / 私網 / link-local / reserved / multicast 等內網目標，
-    避免使用者留言中的圖片連結被用來打內部服務（如 169.254.169.254）。
-    """
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    if parsed.scheme not in ("http", "https"):
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return False
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        ):
-            return False
-    return True
-
-
-def _guarded_get(
-    url: str, *, timeout: int = 30, max_redirects: int = 5
-) -> requests.Response:
-    """對「完全由使用者控制」的 URL 做 SSRF-safe GET。
-
-    每一次（含 redirect 後）都重新驗證目標位址，因此把 redirect 手動逐跳展開
-    （allow_redirects=False），避免初始 URL 合法但 302 轉址到內網。
-    """
-    for _ in range(max_redirects + 1):
-        if not _is_safe_public_url(url):
-            raise ValueError("圖片 URL 指向內網或非 http(s)，已阻擋")
-        resp = requests.get(url, timeout=timeout, allow_redirects=False)
-        if getattr(resp, "is_redirect", False) or getattr(
-            resp, "is_permanent_redirect", False
-        ):
-            location = resp.headers.get("Location")
-            if not location:
-                return resp
-            url = urljoin(url, location)
-            continue
-        return resp
-    raise ValueError("圖片 URL redirect 次數過多，已略過")
-
-
 def download_images(
     client: Any,
     items: list[tuple[int, str]],
@@ -248,8 +184,7 @@ def download_images(
                     url, timeout=30, verify=verify_ssl, allow_redirects=True
                 )
             else:
-                # 完全由留言內容控制的外部 URL → 走 SSRF guard。
-                resp = _guarded_get(url, timeout=30)
+                raise ValueError("External image URL downloads are disabled")
             resp.raise_for_status()
             content = resp.content
             ctype = resp.headers.get("Content-Type", "")

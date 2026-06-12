@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
@@ -133,42 +133,39 @@ class DownloadImagesTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, path, True)
         return path
 
+    def provider_client(self, response: FakeResponse) -> tuple[object, Mock]:
+        session = Mock()
+        session.get.return_value = response
+
+        class FakeClient:
+            base_url = "https://gitlab.example.com"
+            verify_ssl = False
+
+        client = FakeClient()
+        client.session = session
+        return client, session
+
     def test_empty_items_returns_empty(self) -> None:
         self.assertEqual(
             [], image_fetch.download_images(Mock(), [], self.runtime_dir())
         )
 
-    def test_unauthenticated_download_writes_file(self) -> None:
+    def test_unauthenticated_external_download_is_blocked(self) -> None:
         dest = self.runtime_dir()
         client = Mock(spec=[])  # no session / base_url
-        with (
-            patch.object(image_fetch, "_is_safe_public_url", return_value=True),
-            patch.object(
-                image_fetch.requests,
-                "get",
-                return_value=FakeResponse(b"x" * 5000),
-            ) as get,
-        ):
-            assets = image_fetch.download_images(
-                client, [(1, "https://cdn.com/a.png")], dest
-            )
-        self.assertTrue(assets[0].ok)
-        self.assertTrue(Path(assets[0].path).exists())
-        self.assertEqual("image/png", assets[0].media_type)
-        get.assert_called_once()
+        assets = image_fetch.download_images(
+            client, [(1, "https://cdn.com/a.png")], dest
+        )
+        self.assertFalse(assets[0].ok)
+        self.assertIn("External image URL downloads are disabled", assets[0].error)
 
     def test_blocks_ssrf_to_internal_url(self) -> None:
         dest = self.runtime_dir()
-        with (
-            patch.object(image_fetch, "_is_safe_public_url", return_value=False),
-            patch.object(image_fetch.requests, "get") as get,
-        ):
-            assets = image_fetch.download_images(
-                Mock(spec=[]), [(1, "http://169.254.169.254/latest/meta-data")], dest
-            )
+        assets = image_fetch.download_images(
+            Mock(spec=[]), [(1, "http://169.254.169.254/latest/meta-data")], dest
+        )
         self.assertFalse(assets[0].ok)
-        self.assertIn("內網", assets[0].error)
-        get.assert_not_called()
+        self.assertIn("External image URL downloads are disabled", assets[0].error)
 
     def test_authenticated_session_used_for_provider_host(self) -> None:
         dest = self.runtime_dir()
@@ -190,47 +187,33 @@ class DownloadImagesTests(unittest.TestCase):
 
     def test_rejects_html_content(self) -> None:
         dest = self.runtime_dir()
-        with (
-            patch.object(image_fetch, "_is_safe_public_url", return_value=True),
-            patch.object(
-                image_fetch.requests,
-                "get",
-                return_value=FakeResponse(b"x" * 5000, "text/html"),
-            ),
-        ):
-            assets = image_fetch.download_images(
-                Mock(spec=[]), [(1, "https://cdn.com/a.png")], dest
-            )
+        client, _session = self.provider_client(FakeResponse(b"x" * 5000, "text/html"))
+        assets = image_fetch.download_images(
+            client, [(1, "https://gitlab.example.com/uploads/a.png")], dest
+        )
         self.assertFalse(assets[0].ok)
         self.assertIn("非圖片", assets[0].error)
 
     def test_rejects_too_small_image(self) -> None:
         dest = self.runtime_dir()
-        with (
-            patch.object(image_fetch, "_is_safe_public_url", return_value=True),
-            patch.object(
-                image_fetch.requests, "get", return_value=FakeResponse(b"tiny")
-            ),
-        ):
-            assets = image_fetch.download_images(
-                Mock(spec=[]), [(1, "https://cdn.com/a.png")], dest
-            )
+        client, _session = self.provider_client(FakeResponse(b"tiny"))
+        assets = image_fetch.download_images(
+            client, [(1, "https://gitlab.example.com/uploads/a.png")], dest
+        )
         self.assertFalse(assets[0].ok)
 
     def test_respects_max_count(self) -> None:
         dest = self.runtime_dir()
-        with (
-            patch.object(image_fetch, "_is_safe_public_url", return_value=True),
-            patch.object(
-                image_fetch.requests, "get", return_value=FakeResponse(b"x" * 5000)
-            ),
-        ):
-            assets = image_fetch.download_images(
-                Mock(spec=[]),
-                [(1, "https://cdn.com/a.png"), (2, "https://cdn.com/b.png")],
-                dest,
-                max_count=1,
-            )
+        client, _session = self.provider_client(FakeResponse(b"x" * 5000))
+        assets = image_fetch.download_images(
+            client,
+            [
+                (1, "https://gitlab.example.com/uploads/a.png"),
+                (2, "https://gitlab.example.com/uploads/b.png"),
+            ],
+            dest,
+            max_count=1,
+        )
         self.assertEqual(1, len(assets))
 
 
