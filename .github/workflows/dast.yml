@@ -1,0 +1,122 @@
+# .github/workflows/dast.yml
+#
+# Black-box (DAST) security scan using OWASP ZAP baseline.
+# Scans the running surfaces of the app dynamically:
+#   * backend  - the FastAPI/uvicorn API (http://127.0.0.1:8765)
+#   * frontend - the built renderer served as static files
+#
+# ZAP runs inside its own container with --network host so it can reach the
+# services bound to the runner's loopback interface. The scan is informational
+# (does not block CI); HTML/JSON/MD reports are uploaded as artifacts.
+
+name: BlackBox Security Scan (DAST)
+
+on:
+  schedule:
+    # Every Monday 02:00 UTC / 10:00 Taiwan time (after the CodeQL scan).
+    - cron: "0 2 * * 1"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dast-backend:
+    name: DAST - Backend API (FastAPI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Start backend server
+        working-directory: backend
+        run: |
+          nohup python app.py --port 8765 > backend.log 2>&1 &
+          echo "Waiting for backend /api/health ..."
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8765/api/health > /dev/null; then
+              echo "Backend is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend failed to start within 60s"; cat backend.log; exit 1
+
+      - name: ZAP baseline scan (backend)
+        continue-on-error: true
+        run: |
+          mkdir -p zap-out
+          docker run --network host --user root \
+            -v "$PWD/zap-out:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://127.0.0.1:8765 \
+            -I -r report.html -J report.json -w report.md
+
+      - name: Upload backend DAST report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-backend-report
+          path: |
+            zap-out/
+            backend/backend.log
+
+  dast-frontend:
+    name: DAST - Frontend (renderer)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build:frontend
+
+      - name: Serve static frontend
+        run: |
+          # Serving the repo root makes the renderer's relative asset paths
+          # (frontend/ -> ../dist/frontend/scripts/legacy-app.js) resolve.
+          nohup python3 -m http.server 8080 > http-server.log 2>&1 &
+          for i in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:8080/frontend/index.html > /dev/null; then
+              echo "Frontend is being served"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Static server failed to start"; cat http-server.log; exit 1
+
+      - name: ZAP baseline scan (frontend)
+        continue-on-error: true
+        run: |
+          mkdir -p zap-out
+          docker run --network host --user root \
+            -v "$PWD/zap-out:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://127.0.0.1:8080/frontend/index.html \
+            -I -r report.html -J report.json -w report.md
+
+      - name: Upload frontend DAST report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-frontend-report
+          path: zap-out/
