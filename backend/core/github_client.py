@@ -26,6 +26,9 @@ class GitHubIssueProvider:
         self.api_base_url = "https://api.github.com"
         self.verify_ssl = verify_ssl
         self.rate_limit_status: dict[str, str | None] = {}
+        # Set when a paginated fetch was cut short by GitHub's deep-pagination
+        # cap (see _paginate). Callers can surface that results are partial.
+        self.last_page_truncated = False
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -102,9 +105,25 @@ class GitHubIssueProvider:
         page = 1
         results: list[dict[str, Any]] = []
         while True:
-            response = self._request(
-                "GET", path, params={**(params or {}), "per_page": 100, "page": page}
-            )
+            try:
+                response = self._request(
+                    "GET",
+                    path,
+                    params={**(params or {}), "per_page": 100, "page": page},
+                )
+            except requests.exceptions.HTTPError as exc:
+                # Large repositories (e.g. microsoft/vscode) exceed GitHub's
+                # deep-pagination cap: once the requested page passes the last
+                # reachable one, the list endpoint returns 422 ("pagination is
+                # limited for this resource"). That is not a bad request — stop
+                # gracefully with the pages already collected rather than failing
+                # the whole sync. A 422 on the first page is a genuine error and
+                # is left to propagate.
+                status = exc.response.status_code if exc.response is not None else None
+                if page > 1 and status == 422:
+                    self.last_page_truncated = True
+                    break
+                raise
             assert response is not None
             batch = response.json()
             if not isinstance(batch, list):

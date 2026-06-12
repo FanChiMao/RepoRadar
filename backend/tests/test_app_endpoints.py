@@ -153,12 +153,17 @@ class FetchAndDashboardTests(unittest.TestCase):
     def test_get_dashboard(self) -> None:
         with (
             patch.object(api_app, "read_issues", return_value=[{"iid": 1}]),
-            patch.object(api_app, "load_meta", return_value={"last_sync": "now"}),
+            patch.object(
+                api_app,
+                "load_meta",
+                return_value={"last_sync": "now", "last_sync_truncated": True},
+            ),
             patch.object(api_app, "build_dashboard", return_value={"summary": {}}),
         ):
             result = api_app.get_dashboard()
         self.assertEqual(1, result["issue_count"])
         self.assertEqual("now", result["last_sync"])
+        self.assertTrue(result["sync_truncated"])
 
     def test_get_issues_simplifies(self) -> None:
         with patch.object(
@@ -166,6 +171,26 @@ class FetchAndDashboardTests(unittest.TestCase):
         ):
             issues = api_app.get_issues()
         self.assertEqual(1, len(issues))
+
+    def test_fetch_issues_records_truncation_flag(self) -> None:
+        client = Mock()
+        client.provider_name = "github"
+        client.fetch_project_issues.return_value = [{"iid": 1, "user_notes_count": 0}]
+        client.last_page_truncated = True
+        saved_meta: dict = {}
+        with (
+            patch.object(api_app, "load_config", return_value={}),
+            patch.object(
+                api_app, "active_provider_context", return_value=(client, "owner/repo")
+            ),
+            patch.object(api_app, "read_issues", return_value=[]),
+            patch.object(api_app, "write_json"),
+            patch.object(api_app, "load_meta", return_value={}),
+            patch.object(api_app, "save_meta", side_effect=saved_meta.update),
+            patch.object(api_app.repo_registry, "snapshot_active_repo"),
+        ):
+            api_app.fetch_issues()
+        self.assertTrue(saved_meta["last_sync_truncated"])
 
 
 class IssueRelationEndpointTests(unittest.TestCase):

@@ -76,6 +76,39 @@ class PaginationTests(unittest.TestCase):
         )
         self.assertEqual([], self.provider.fetch_project_issues("owner/repo"))
 
+    def test_deep_pagination_422_stops_gracefully(self) -> None:
+        # Large repos hit GitHub's deep-pagination cap: page 1 succeeds, the
+        # next page returns 422. The sync should keep page 1 and flag truncation
+        # instead of raising.
+        self.provider.session.request = Mock(  # type: ignore[method-assign]
+            side_effect=[
+                response(
+                    [{"id": 1, "number": 10, "title": "A", "state": "open"}],
+                    headers={"Link": '<https://api/next>; rel="next"'},
+                ),
+                response(
+                    {
+                        "message": "In order to keep the API fast for everyone, "
+                        "pagination is limited for this resource."
+                    },
+                    422,
+                ),
+            ]
+        )
+        issues = self.provider.fetch_project_issues("owner/repo")
+        self.assertEqual([10], [item["iid"] for item in issues])
+        self.assertTrue(self.provider.last_page_truncated)
+
+    def test_first_page_422_still_raises(self) -> None:
+        # A 422 on the very first page is a genuine bad request, not the
+        # deep-pagination cap, so it must propagate.
+        self.provider.session.request = Mock(  # type: ignore[method-assign]
+            return_value=response({"message": "Validation failed"}, 422)
+        )
+        with self.assertRaises(requests.exceptions.HTTPError):
+            self.provider.fetch_project_issues("owner/repo")
+        self.assertFalse(self.provider.last_page_truncated)
+
 
 class RequestRetryTests(unittest.TestCase):
     def setUp(self) -> None:

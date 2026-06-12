@@ -934,6 +934,7 @@ def read_issues() -> list[dict[str, Any]]:
 
 def fetch_issues() -> list[dict[str, Any]]:
     config = load_config()
+    truncated = False
     if config.get("import_file"):
         issues = GitLabIssueClient.load_local_json(config["import_file"])
         provider_name = "import"
@@ -942,6 +943,9 @@ def fetch_issues() -> list[dict[str, Any]]:
         client, project_ref = active_provider_context(config)
         provider_name = client.provider_name
         issues = client.fetch_project_issues(project_ref)
+        # Large repos can exceed the provider's deep-pagination cap, so the
+        # synced list may be the most-recent slice rather than every issue.
+        truncated = bool(getattr(client, "last_page_truncated", False))
 
     # Detect new discussions by comparing user_notes_count with cached data
     old_issues = read_issues()
@@ -966,6 +970,7 @@ def fetch_issues() -> list[dict[str, Any]]:
     write_json(CACHE_PATH, issues)
     meta = load_meta()
     meta["last_sync"] = utc_now().isoformat()
+    meta["last_sync_truncated"] = truncated
     save_meta(meta)
 
     # Snapshot the freshly-synced active repo so AI Schedule tasks bound to
@@ -1924,6 +1929,7 @@ def get_dashboard() -> dict[str, Any]:
         "last_report": meta.get("last_report"),
         "issue_count": len(issues),
         "latest_report_path": meta.get("latest_report_path"),
+        "sync_truncated": bool(meta.get("last_sync_truncated", False)),
     }
 
 
