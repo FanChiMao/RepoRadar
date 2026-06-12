@@ -456,12 +456,11 @@ def save_arrange_output(
         model_name=model_name,
         extension=extension,
     )
-    filepath = directory / filename
-    # 檔名各段已過 _sanitize_archive_part（移除 '/'、'\\' 等），這裡再確認最終路徑
-    # 仍封閉在目標目錄內，杜絕路徑穿越。
-    directory_root = directory.resolve()
-    if not filepath.resolve().is_relative_to(directory_root):
+    # 以白名單正規式驗證最終檔名（不含路徑分隔字元、'..' 等），與讀取端
+    # resolve_arrange_output 一致，杜絕路徑穿越。
+    if not ARCHIVE_FILENAME_RE.match(filename):
         raise ValueError("Arrange output path escapes target directory")
+    filepath = directory / filename
     if filepath.exists():
         stem = filepath.stem
         suffix = filepath.suffix
