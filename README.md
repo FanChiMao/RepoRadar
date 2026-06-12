@@ -108,7 +108,7 @@ Electron 啟動後會執行 loopback FastAPI;health endpoint 為 `http://127.0.0
 ```powershell
 # 後端測試(Python / pytest)與覆蓋率
 .\.venv\Scripts\python.exe -m pytest backend\tests
-.\.venv\Scripts\python.exe -m pytest backend\tests --cov --cov-report=term   # 目前 source 覆蓋率約 45%
+.\.venv\Scripts\python.exe -m pytest backend\tests --cov --cov-report=term   # 目前 source 覆蓋率約 69%
 
 # 前端測試(TypeScript / Vitest)與覆蓋率
 npm.cmd test
