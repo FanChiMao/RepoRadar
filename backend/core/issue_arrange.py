@@ -424,16 +424,15 @@ def build_arrange_archive_filename(
     extension: str = "md",
     now: datetime | None = None,
 ) -> str:
-    _base_url, project_ref, issue_iid = parse_issue_url(url)
-    repo_name = _sanitize_archive_part(_archive_repo_name(project_ref))
-    item_number = _sanitize_archive_part(str(issue_iid))
+    _base_url, _project_ref, issue_iid = parse_issue_url(url)
+    item_number = str(int(issue_iid))
     timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    suffix = (
-        "scrape"
-        if kind == "scrape"
-        else _sanitize_archive_part(model_name or "unknown-model")
-    )
-    return f"{repo_name}_{item_number}_{suffix}_{timestamp}.{extension}"
+    extension = extension if re.fullmatch(r"[a-z0-9]{1,8}", extension) else "md"
+    suffix = "scrape"
+    if kind != "scrape":
+        safe_model = _sanitize_archive_part(model_name or "unknown-model")
+        suffix = f"model-{safe_model[:48]}"
+    return f"issue_{item_number}_{suffix}_{timestamp}.{extension}"
 
 
 def save_arrange_output(
@@ -451,12 +450,17 @@ def save_arrange_output(
     directory = base_dir / folder_name
     directory.mkdir(parents=True, exist_ok=True)
 
-    filepath = directory / build_arrange_archive_filename(
+    filename = build_arrange_archive_filename(
         url=url,
         kind=kind,
         model_name=model_name,
         extension=extension,
     )
+    # 以白名單正規式驗證最終檔名（不含路徑分隔字元、'..' 等），與讀取端
+    # resolve_arrange_output 一致，杜絕路徑穿越。
+    if not ARCHIVE_FILENAME_RE.match(filename):
+        raise ValueError("Arrange output path escapes target directory")
+    filepath = directory / filename
     if filepath.exists():
         stem = filepath.stem
         suffix = filepath.suffix

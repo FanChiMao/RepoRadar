@@ -15,10 +15,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
 
-import requests
-
 # markdown ![alt](url "title") 與 HTML <img src="url">
-_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+# 注意：alt 與 url 量詞用 possessive（*+ / ++）避免在 '![](' 大量重複時的多項式回溯（ReDoS）。
+_MD_IMG_RE = re.compile(r"!\[[^\]]*+\]\(\s*<?([^)\s>]++)>?(?:\s+\"[^\"]*\")?\s*\)")
 _HTML_IMG_RE = re.compile(r"<img\b[^>]*?\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
 
 _IMG_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
@@ -139,6 +138,12 @@ def _media_type_from(url: str, content_type: str | None) -> str:
     return _MIME_BY_EXT.get(ext, "image/png")
 
 
+def _safe_ext_from_media_type(media_type: str) -> str:
+    """由 media_type 推副檔名，只允許白名單，避免把分隔符/路徑帶進檔名。"""
+    sub = media_type.split("/")[-1].strip().lower().replace("jpeg", "jpg")
+    return "." + sub if re.fullmatch(r"[a-z0-9]{1,8}", sub) else ".png"
+
+
 def download_images(
     client: Any,
     items: list[tuple[int, str]],
@@ -173,11 +178,13 @@ def download_images(
                 host == h or host.endswith("." + h) for h in provider_hosts
             )
             if use_auth:
+                # 認證分支只會打已設定的 provider host（使用者自填、可信，
+                # 含自架 GitLab 內網），維持既有行為。
                 resp = authed_session.get(
                     url, timeout=30, verify=verify_ssl, allow_redirects=True
                 )
             else:
-                resp = requests.get(url, timeout=30, allow_redirects=True)
+                raise ValueError("External image URL downloads are disabled")
             resp.raise_for_status()
             content = resp.content
             ctype = resp.headers.get("Content-Type", "")
@@ -189,8 +196,12 @@ def download_images(
             if len(content) > max_bytes:
                 raise ValueError("圖片過大，略過")
             media_type = _media_type_from(url, ctype)
-            ext = "." + media_type.split("/")[-1].replace("jpeg", "jpg")
+            ext = _safe_ext_from_media_type(media_type)
+            # 檔名僅由序號 + 白名單副檔名組成；再確認最終路徑仍封閉在 dest_dir 內。
             out_path = dest_dir / f"image_{key:02d}{ext}"
+            dest_root = dest_dir.resolve()
+            if not out_path.resolve().is_relative_to(dest_root):
+                raise ValueError("輸出路徑逸出目標目錄，已略過")
             out_path.write_bytes(content)
             asset.ok = True
             asset.path = str(out_path)
