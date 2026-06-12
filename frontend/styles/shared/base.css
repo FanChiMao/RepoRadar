@@ -252,6 +252,42 @@ button:active {
   border-color: rgba(124, 156, 255, 0.3);
 }
 
+/* Sync-in-progress state: keep the button readable (overrides the disabled
+   dimming) and sweep a diagonal shine across it while fetching. */
+.btn-syncing {
+  position: relative;
+  overflow: hidden;
+  cursor: progress;
+  opacity: 1 !important;
+}
+.btn-syncing::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    120deg,
+    transparent 35%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 65%
+  );
+  transform: translateX(-160%) skewX(-20deg);
+  animation: btn-sync-shine 1.1s ease-in-out infinite;
+}
+@keyframes btn-sync-shine {
+  0% {
+    transform: translateX(-160%) skewX(-20deg);
+  }
+  100% {
+    transform: translateX(160%) skewX(-20deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-syncing::after {
+    animation: none;
+  }
+}
+
 .ghost-btn {
   background: rgba(255, 255, 255, 0.04);
   backdrop-filter: blur(8px);
