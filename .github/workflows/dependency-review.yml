@@ -1,0 +1,31 @@
+# .github/workflows/dependency-review.yml
+#
+# Dependency check gate: scans dependency manifests changed in a pull request
+# (npm at /, pip at /backend) and fails the PR if it introduces a known
+# vulnerable dependency. Complements Dependabot, which opens upgrade PRs.
+
+name: Dependency Review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dependency-review:
+    name: Dependency Review (npm + pip)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          # Block the PR on High/Critical vulnerable dependencies.
+          fail-on-severity: high
+          # Post a summary as a PR comment for visibility.
+          comment-summary-in-pr: always
