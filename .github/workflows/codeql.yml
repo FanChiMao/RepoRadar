@@ -1,6 +1,6 @@
 # .github/workflows/codeql.yml
 
-name: White-Box Security Scan (CodeQL)
+name: WhiteBox Security Scan (CodeQL)
 
 on:
   push:
@@ -8,8 +8,9 @@ on:
   pull_request:
     branches: [main]
   schedule:
-  # Every Monday 09:00 Taiwan time / Monday 01:00 UTC
-  - cron: "0 1 * * 1"
+    # Every Monday 09:00 Taiwan time / Monday 01:00 UTC
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
 
 jobs:
   analyze:

@@ -298,7 +298,7 @@ class ArchiveHelperTests(unittest.TestCase):
             model_name="gpt-4o",
             now=datetime(2026, 6, 11, 8, 30, 0),
         )
-        self.assertEqual("issue_7_model-a2a69af70d1b_20260611_083000.md", name)
+        self.assertEqual("issue_7_model-gpt-4o_20260611_083000.md", name)
 
     def test_build_arrange_archive_filename_scrape(self) -> None:
         name = ia.build_arrange_archive_filename(

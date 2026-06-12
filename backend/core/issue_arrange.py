@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from collections.abc import Iterable
 from datetime import datetime
@@ -431,10 +430,8 @@ def build_arrange_archive_filename(
     extension = extension if re.fullmatch(r"[a-z0-9]{1,8}", extension) else "md"
     suffix = "scrape"
     if kind != "scrape":
-        model_digest = hashlib.sha256(
-            (model_name or "unknown-model").encode("utf-8")
-        ).hexdigest()[:12]
-        suffix = f"model-{model_digest}"
+        safe_model = _sanitize_archive_part(model_name or "unknown-model")
+        suffix = f"model-{safe_model[:48]}"
     return f"issue_{item_number}_{suffix}_{timestamp}.{extension}"
 
 
