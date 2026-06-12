@@ -100,6 +100,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+# Gemini 模型名稱只會是 'gemini-2.5-flash' 這類字串；插進 API URL path 前先驗證，
+# 避免使用者控制的 model 值夾帶 '/'、'@'、'..' 等造成 request forgery（SSRF）。
+_GEMINI_MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def _safe_gemini_model(model: str) -> str:
+    model = (model or "").strip()
+    if not _GEMINI_MODEL_RE.fullmatch(model):
+        raise ValueError(f"Invalid Gemini model name: {model!r}")
+    return model
+
+
+def _gemini_generate_url(model: str, api_key: str) -> str:
+    safe_model = _safe_gemini_model(model)
+    return (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{safe_model}:generateContent?key={api_key}"
+    )
+
 
 class ConfigPayload(BaseModel):
     active_provider: str = "gitlab"
@@ -419,8 +438,12 @@ def extract_json_object(text: str) -> dict[str, Any]:
         raise ValueError("Empty model response.")
 
     if value.startswith("```"):
-        value = re.sub(r"^```(?:json)?\s*", "", value, flags=re.IGNORECASE)
-        value = re.sub(r"\s*```$", "", value)
+        # 用字串處理剝除 code fence，避免 \s*```$ 在大量空白輸入下的多項式回溯（ReDoS）。
+        value = re.sub(r"^```(?:json)?", "", value, count=1, flags=re.IGNORECASE)
+        value = value.strip()
+        if value.endswith("```"):
+            value = value[:-3]
+        value = value.strip()
 
     try:
         parsed = json.loads(value)
@@ -654,10 +677,7 @@ def call_gemini_json_text(
             last_error = "Gemini API Key 未設定。"
             continue
 
-        gemini_url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={gemini_key}"
-        )
+        gemini_url = _gemini_generate_url(model, gemini_key)
         req_payload = payload
         if images and is_vision_model(model):
             req_payload = json.loads(json.dumps(payload))  # deep copy（純文字內容）
@@ -754,10 +774,7 @@ def caption_image(model: str, asset: ImageAsset) -> str:
     gemini_key = load_config().get("gemini_api_key", "")
     if not gemini_key:
         return ""
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={gemini_key}"
-    )
+    url = _gemini_generate_url(model, gemini_key)
     payload = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [
@@ -2080,10 +2097,7 @@ def summarize_discussions(iid: int) -> dict[str, str]:
             last_error = "Gemini API Key 未設定。"
             continue
 
-        gemini_url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={gemini_key}"
-        )
+        gemini_url = _gemini_generate_url(model, gemini_key)
 
         payload = {
             "systemInstruction": {
@@ -2266,10 +2280,7 @@ def call_gemini_answer(
             last_error = "Gemini API Key 未設定。"
             continue
 
-        gemini_url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={gemini_key}"
-        )
+        gemini_url = _gemini_generate_url(model, gemini_key)
 
         payload_json = {
             "systemInstruction": {"parts": [{"text": system_instruction}]},

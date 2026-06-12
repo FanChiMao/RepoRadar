@@ -451,12 +451,18 @@ def save_arrange_output(
     directory = base_dir / folder_name
     directory.mkdir(parents=True, exist_ok=True)
 
-    filepath = directory / build_arrange_archive_filename(
+    filename = build_arrange_archive_filename(
         url=url,
         kind=kind,
         model_name=model_name,
         extension=extension,
     )
+    filepath = directory / filename
+    # 檔名各段已過 _sanitize_archive_part（移除 '/'、'\\' 等），這裡再確認最終路徑
+    # 仍封閉在目標目錄內，杜絕路徑穿越。
+    directory_root = directory.resolve()
+    if not filepath.resolve().is_relative_to(directory_root):
+        raise ValueError("Arrange output path escapes target directory")
     if filepath.exists():
         stem = filepath.stem
         suffix = filepath.suffix

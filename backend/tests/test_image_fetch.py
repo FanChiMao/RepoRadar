@@ -141,11 +141,14 @@ class DownloadImagesTests(unittest.TestCase):
     def test_unauthenticated_download_writes_file(self) -> None:
         dest = self.runtime_dir()
         client = Mock(spec=[])  # no session / base_url
-        with patch.object(
-            image_fetch.requests,
-            "get",
-            return_value=FakeResponse(b"x" * 5000),
-        ) as get:
+        with (
+            patch.object(image_fetch, "_is_safe_public_url", return_value=True),
+            patch.object(
+                image_fetch.requests,
+                "get",
+                return_value=FakeResponse(b"x" * 5000),
+            ) as get,
+        ):
             assets = image_fetch.download_images(
                 client, [(1, "https://cdn.com/a.png")], dest
             )
@@ -153,6 +156,19 @@ class DownloadImagesTests(unittest.TestCase):
         self.assertTrue(Path(assets[0].path).exists())
         self.assertEqual("image/png", assets[0].media_type)
         get.assert_called_once()
+
+    def test_blocks_ssrf_to_internal_url(self) -> None:
+        dest = self.runtime_dir()
+        with (
+            patch.object(image_fetch, "_is_safe_public_url", return_value=False),
+            patch.object(image_fetch.requests, "get") as get,
+        ):
+            assets = image_fetch.download_images(
+                Mock(spec=[]), [(1, "http://169.254.169.254/latest/meta-data")], dest
+            )
+        self.assertFalse(assets[0].ok)
+        self.assertIn("內網", assets[0].error)
+        get.assert_not_called()
 
     def test_authenticated_session_used_for_provider_host(self) -> None:
         dest = self.runtime_dir()
@@ -174,10 +190,13 @@ class DownloadImagesTests(unittest.TestCase):
 
     def test_rejects_html_content(self) -> None:
         dest = self.runtime_dir()
-        with patch.object(
-            image_fetch.requests,
-            "get",
-            return_value=FakeResponse(b"x" * 5000, "text/html"),
+        with (
+            patch.object(image_fetch, "_is_safe_public_url", return_value=True),
+            patch.object(
+                image_fetch.requests,
+                "get",
+                return_value=FakeResponse(b"x" * 5000, "text/html"),
+            ),
         ):
             assets = image_fetch.download_images(
                 Mock(spec=[]), [(1, "https://cdn.com/a.png")], dest
@@ -187,8 +206,11 @@ class DownloadImagesTests(unittest.TestCase):
 
     def test_rejects_too_small_image(self) -> None:
         dest = self.runtime_dir()
-        with patch.object(
-            image_fetch.requests, "get", return_value=FakeResponse(b"tiny")
+        with (
+            patch.object(image_fetch, "_is_safe_public_url", return_value=True),
+            patch.object(
+                image_fetch.requests, "get", return_value=FakeResponse(b"tiny")
+            ),
         ):
             assets = image_fetch.download_images(
                 Mock(spec=[]), [(1, "https://cdn.com/a.png")], dest
@@ -197,8 +219,11 @@ class DownloadImagesTests(unittest.TestCase):
 
     def test_respects_max_count(self) -> None:
         dest = self.runtime_dir()
-        with patch.object(
-            image_fetch.requests, "get", return_value=FakeResponse(b"x" * 5000)
+        with (
+            patch.object(image_fetch, "_is_safe_public_url", return_value=True),
+            patch.object(
+                image_fetch.requests, "get", return_value=FakeResponse(b"x" * 5000)
+            ),
         ):
             assets = image_fetch.download_images(
                 Mock(spec=[]),
