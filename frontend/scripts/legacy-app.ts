@@ -1032,6 +1032,27 @@ function setActionButtonsEnabled(enabled: boolean): void {
   }
 }
 
+const SYNC_BTNS = ['btn-sync-now', 'btn-refresh-dashboard'];
+// While syncing, swap the sync buttons to a "同步中…" label with a diagonal
+// shine sweep (the .btn-syncing class) instead of just dimming them.
+function setSyncButtonsSyncing(syncing: boolean): void {
+  for (const id of SYNC_BTNS) {
+    const btn = getById<HTMLButtonElement>(id);
+    if (!btn) continue;
+    if (syncing) {
+      if (!btn.dataset.idleLabel) btn.dataset.idleLabel = btn.textContent || '立即同步';
+      btn.textContent = '同步中…';
+      btn.classList.add('btn-syncing');
+    } else {
+      btn.classList.remove('btn-syncing');
+      if (btn.dataset.idleLabel) {
+        btn.textContent = btn.dataset.idleLabel;
+        delete btn.dataset.idleLabel;
+      }
+    }
+  }
+}
+
 function escapeHtml(text: string): string {
   const div = document.createElement('div');
   div.textContent = text;
@@ -5048,12 +5069,14 @@ async function loadDashboard(): Promise<void> {
 async function syncNow(): Promise<void> {
   setStatus(`同步中…（從 ${providerLabel()} 抓取，請稍候）`);
   setActionButtonsEnabled(false);
+  setSyncButtonsSyncing(true);
   try {
     await saveConfig();
     await api('/api/fetch', 'POST', {});
     await loadDashboard();
     setStatus('同步完成', 'success');
   } finally {
+    setSyncButtonsSyncing(false);
     setActionButtonsEnabled(true);
   }
 }
