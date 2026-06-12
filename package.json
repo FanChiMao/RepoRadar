@@ -130,7 +130,7 @@
     "sumchecker": "^3.0.1",
     "type-fest": "^0.13.1",
     "undici-types": "^7.16.0",
-    "universalify": "^0.1.2",
+    "universalify": "^2.0.1",
     "wrappy": "^1.0.2",
     "yauzl": "^2.10.0"
   }
