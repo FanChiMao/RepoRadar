@@ -10,6 +10,7 @@ const DEFAULT_ZOOM_FACTOR = 1;
 const MIN_ZOOM_FACTOR = 0.8;
 const MAX_ZOOM_FACTOR = 1.6;
 const ZOOM_STEP = 0.1;
+const USER_DATA_DIR_NAME = 'RepoRadar';
 
 type ExternalBrowserChoice = 'edge' | 'chrome' | 'default';
 
@@ -19,6 +20,28 @@ type ExternalLinkPreferences = {
 
 let mainWindow: BrowserWindow | null = null;
 let backendProcess: ChildProcess | null = null;
+
+function configureUserDataPath(): void {
+  if (process.platform !== 'win32') {
+    return;
+  }
+
+  const appDataPath = app.getPath('appData');
+  const legacyUserDataPath = path.join(appDataPath, 'repo-radar');
+  const userDataPath = path.join(appDataPath, USER_DATA_DIR_NAME);
+
+  try {
+    if (fs.existsSync(legacyUserDataPath) && !fs.existsSync(userDataPath)) {
+      fs.cpSync(legacyUserDataPath, userDataPath, { recursive: true });
+    }
+  } catch (error) {
+    console.warn('[userData] failed to migrate legacy userData directory', error);
+  }
+
+  app.setPath('userData', userDataPath);
+}
+
+configureUserDataPath();
 
 // Per-launch token shared with the backend so other local processes cannot
 // drive the loopback API. Regenerated every launch; never persisted.
@@ -165,10 +188,14 @@ async function promptForExternalBrowser(
 }
 
 async function openExternalUrlWithConfirmation(url: string): Promise<boolean> {
+  const safeUrl = normalizeExternalHttpUrl(url);
+  if (!safeUrl) {
+    return false;
+  }
   const preferences = loadExternalLinkPreferences();
 
   if (preferences.preferredBrowser) {
-    const launched = await launchExternalUrl(url, preferences.preferredBrowser);
+    const launched = await launchExternalUrl(safeUrl, preferences.preferredBrowser);
     if (launched) {
       return true;
     }
@@ -190,12 +217,12 @@ async function openExternalUrlWithConfirmation(url: string): Promise<boolean> {
     }
   }
 
-  const { choice, rememberChoice } = await promptForExternalBrowser(url);
+  const { choice, rememberChoice } = await promptForExternalBrowser(safeUrl);
   if (!choice) {
     return false;
   }
 
-  const launched = await launchExternalUrl(url, choice);
+  const launched = await launchExternalUrl(safeUrl, choice);
   if (!launched) {
     const dialogOptions: Electron.MessageBoxOptions = {
       type: 'warning',
@@ -221,6 +248,39 @@ async function openExternalUrlWithConfirmation(url: string): Promise<boolean> {
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
+}
+
+function normalizeExternalHttpUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function backendDataRoot(): string {
+  return app.isPackaged
+    ? path.join(app.getPath('userData'), 'repo-radar-data')
+    : path.join(backendRoot(), 'data');
+}
+
+function isPathInside(candidate: string, root: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return (
+    relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative))
+  );
+}
+
+function resolveOpenableLocalPath(filePath: string): string | null {
+  const candidate = path.isAbsolute(filePath)
+    ? path.resolve(filePath)
+    : path.resolve(backendRoot(), filePath);
+  const allowedRoots = [backendDataRoot(), app.getPath('userData')];
+  return allowedRoots.some((root) => isPathInside(candidate, root)) ? candidate : null;
 }
 
 function frontendPath(fileName: string): string {
@@ -533,7 +593,11 @@ ipcMain.handle('shell:openPath', async (_event, filePath: string) => {
   if (isHttpUrl(filePath)) {
     return openExternalUrlWithConfirmation(filePath);
   }
-  const absolute = path.isAbsolute(filePath) ? filePath : path.join(backendRoot(), filePath);
+  const absolute = resolveOpenableLocalPath(filePath);
+  if (!absolute) {
+    console.warn('[shell] blocked attempt to open path outside app data');
+    return false;
+  }
   await shell.openPath(absolute);
   return true;
 });

@@ -17,7 +17,7 @@ npm.cmd run dist
 ## 封裝後路徑
 
 - Backend executable：`resources/backend/dist/repo-radar-backend/`
-- App 資料：`app.getPath('userData')/repo-radar-data`
+- App 資料：`app.getPath('userData')/repo-radar-data`，Windows 預設為 `%APPDATA%\RepoRadar\repo-radar-data\`
 - Frontend：隨 app files 封裝
 
 `nsis.deleteAppDataOnUninstall=true`，解除安裝會刪除 userData 內 tracker data。

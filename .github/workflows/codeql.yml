@@ -36,8 +36,86 @@ jobs:
           languages: ${{ matrix.language }}
           # Use "security-extended" for more (noisier) coverage if desired
           queries: security-and-quality
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:${{ matrix.language }}"
+
+  alert-gate:
+    name: Code Scanning Alert Gate
+    runs-on: ubuntu-latest
+    needs: analyze
+    permissions:
+      contents: read
+      security-events: read
+    steps:
+      - name: Fail on open high-severity code scanning alerts
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const params = {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            };
+
+            if (context.eventName === 'pull_request') {
+              params.pr = context.payload.pull_request.number;
+            }
+
+            const alerts = await github.paginate(
+              github.rest.codeScanning.listAlertsForRepo,
+              params,
+            );
+
+            const blockingRuleSeverities = new Set(['critical', 'high', 'error']);
+            const blockingSecuritySeverities = new Set(['critical', 'high']);
+            const productPathPrefixes = ['backend/', 'frontend/', 'src/'];
+            const ignoredPathPrefixes = ['backend/tests/', 'frontend/tests/'];
+            const blocking = alerts.filter((alert) => {
+              const path = alert.most_recent_instance?.location?.path || '';
+              if (
+                !productPathPrefixes.some((prefix) => path.startsWith(prefix)) ||
+                ignoredPathPrefixes.some((prefix) => path.startsWith(prefix))
+              ) {
+                return false;
+              }
+              const severity = String(alert.rule?.severity || '').toLowerCase();
+              const securitySeverity = String(
+                alert.rule?.security_severity_level || '',
+              ).toLowerCase();
+              return (
+                blockingRuleSeverities.has(severity) ||
+                blockingSecuritySeverities.has(securitySeverity)
+              );
+            });
+
+            if (blocking.length === 0) {
+              core.info('No open high-severity code scanning alerts found.');
+              return;
+            }
+
+            core.summary.addHeading('Blocking code scanning alerts');
+            for (const alert of blocking.slice(0, 20)) {
+              const location = alert.most_recent_instance?.location;
+              const path = location?.path || 'unknown path';
+              const line = location?.start_line || '?';
+              const severity =
+                alert.rule?.security_severity_level || alert.rule?.severity || 'unknown';
+              core.summary.addRaw(
+                `- #${alert.number} ${alert.rule?.id || 'unknown rule'} ` +
+                  `(${severity}) at ${path}:${line} - ${alert.html_url}\n`,
+              );
+            }
+            if (blocking.length > 20) {
+              core.summary.addRaw(`- ...and ${blocking.length - 20} more alerts.\n`);
+            }
+            await core.summary.write();
+
+            core.setFailed(
+              `${blocking.length} open high-severity code scanning alert(s) found.`,
+            );

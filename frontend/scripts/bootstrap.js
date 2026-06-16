@@ -30,5 +30,10 @@ async function bootstrap() {
 
 bootstrap().catch((error) => {
   console.error(error);
-  document.body.innerHTML = `<pre style="padding: 24px; color: #f87171">${error.message}</pre>`;
+  document.body.replaceChildren();
+  const message = document.createElement('pre');
+  message.style.padding = '24px';
+  message.style.color = '#f87171';
+  message.textContent = error instanceof Error ? error.message : String(error);
+  document.body.appendChild(message);
 });

@@ -1,0 +1,16 @@
+name: RepoRadar CodeQL Config
+
+paths:
+  - backend
+  - frontend
+  - src
+
+paths-ignore:
+  - backend/tests
+  - frontend/tests
+  - backend/build
+  - backend/dist
+  - backend/data
+  - dist
+  - release
+  - .github/skills
