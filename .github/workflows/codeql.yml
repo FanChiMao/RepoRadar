@@ -51,11 +51,15 @@ jobs:
       contents: read
       security-events: read
     steps:
-      - name: Fail on open high-severity code scanning alerts
+      - name: Gate high-severity code scanning alerts
         uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
+            const shouldFail =
+              context.eventName === 'pull_request' ||
+              context.eventName === 'schedule' ||
+              context.eventName === 'workflow_dispatch';
             const params = {
               owner,
               repo,
@@ -116,6 +120,10 @@ jobs:
             }
             await core.summary.write();
 
-            core.setFailed(
-              `${blocking.length} open high-severity code scanning alert(s) found.`,
-            );
+            const message =
+              `${blocking.length} open high-severity code scanning alert(s) found.`;
+            if (shouldFail) {
+              core.setFailed(message);
+            } else {
+              core.warning(`${message} Existing main-branch alerts are reported only.`);
+            }
