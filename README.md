@@ -92,7 +92,7 @@ Electron 啟動後會執行 loopback FastAPI;health endpoint 為 `http://127.0.0
 
 ## 🔐 資料與 Secrets
 
-開發環境資料預設在 `backend/data/`;封裝後使用 Electron `userData/repo-radar-data/`。可用 `REPO_RADAR_DATA_DIR` 覆寫。
+開發環境資料預設在 `backend/data/`;封裝後使用 Electron `userData/repo-radar-data/`，Windows 預設為 `%APPDATA%\RepoRadar\repo-radar-data\`。可用 `REPO_RADAR_DATA_DIR` 覆寫。
 
 - `config.json`:provider、project/repository、排程與 API key 設定。Secrets 仍以明碼存在 backend 檔案。
 - `issues_cache.json`:目前來源的 schema v2 Issue cache。

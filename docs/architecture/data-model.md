@@ -5,7 +5,7 @@
 所有 backend 資料由 `core/config_store.py` 管理：
 
 - 開發模式：`backend/data/`
-- 封裝模式：`<Electron userData>/repo-radar-data/`
+- 封裝模式：`<Electron userData>/repo-radar-data/`，Windows 預設為 `%APPDATA%\RepoRadar\repo-radar-data\`
 - 覆寫：`REPO_RADAR_DATA_DIR`
 
 ```text
@@ -140,8 +140,8 @@ Import JSON 模式優先於 provider API；由於沒有 live provider context，
 
 Frontend 只保存非 secret UI 狀態：
 
-| Key                                       | 內容                                     |
-| ----------------------------------------- | ---------------------------------------- |
+| Key                                   | 內容                                     |
+| ------------------------------------- | ---------------------------------------- |
 | `repo-radar:config-cache`             | Masked config 與 configured flags        |
 | `repo-radar:ui-preferences`           | Theme、scale、sidebar、Chat/Arrange 模型 |
 | `repo-radar:arrange-prompt-templates` | Arrange prompt templates                 |
