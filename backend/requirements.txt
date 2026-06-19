@@ -1,7 +1,7 @@
 fastapi>=0.136.3
 uvicorn>=0.35.0
 requests>=2.34.2
-cryptography>=43.0
+cryptography>=49.0.0
 openpyxl>=3.1.5
 tzdata>=2026.2
 python-dotenv>=1.2.2
