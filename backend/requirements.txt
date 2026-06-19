@@ -6,7 +6,7 @@ openpyxl>=3.1.5
 tzdata>=2026.2
 python-dotenv>=1.2.2
 black==26.3.1
-ruff==0.14.6
+ruff==0.15.18
 pytest==9.0.3
 pytest-cov==7.1.0
 httpx>=0.28.1  # required by fastapi/starlette TestClient in backend tests
