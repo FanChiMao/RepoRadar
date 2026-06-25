@@ -108,6 +108,64 @@ class CheckPulseTests(unittest.TestCase):
         runner.assert_not_called()
 
 
+class DispatchTests(unittest.TestCase):
+    def test_synchronous_submit_runs_inline(self) -> None:
+        scheduler, _ = _make_scheduler(synchronous=True)
+        runner = Mock()
+        scheduler._submit(runner, "x")
+        runner.assert_called_once_with("x")
+
+    def test_submit_swallows_errors(self) -> None:
+        scheduler, _ = _make_scheduler(synchronous=True)
+        scheduler._submit(Mock(side_effect=RuntimeError("boom")), "x")  # no raise
+
+    def test_async_submit_queues_without_running(self) -> None:
+        scheduler, _ = _make_scheduler()
+        runner = Mock()
+        scheduler._submit(runner, "x")
+        runner.assert_not_called()
+        self.assertEqual(1, scheduler._work_queue.qsize())
+
+    def test_all_same_time_schedules_dispatch(self) -> None:
+        # The race fix: when two schedules share a send time, both must be
+        # dispatched in the same pass — not just the first.
+        runner = Mock()
+        all_days = [1, 2, 3, 4, 5, 6, 7]
+        schedules = [
+            {
+                "enabled": True,
+                "teams_webhook_url": "https://h",
+                "id": "s1",
+                "workdays": all_days,
+            },
+            {
+                "enabled": True,
+                "teams_webhook_url": "https://h",
+                "id": "s2",
+                "workdays": all_days,
+            },
+        ]
+        scheduler, _ = _make_scheduler(
+            pulse_provider=Mock(return_value=schedules),
+            pulse_runner=runner,
+            synchronous=True,
+        )
+        scheduler._should_run = Mock(return_value=True)  # treat both as due
+        scheduler._check_pulse()
+        self.assertEqual([(("s1",), {}), (("s2",), {})], runner.call_args_list)
+
+
+class TickTests(unittest.TestCase):
+    def test_tick_once_evaluates_pulse(self) -> None:
+        runner = Mock()
+        scheduler, _ = _make_scheduler(
+            pulse_provider=Mock(return_value=[]),
+            pulse_runner=runner,
+            synchronous=True,
+        )
+        scheduler.tick_once()  # should not raise with empty schedule set
+
+
 class StartStopTests(unittest.TestCase):
     def test_start_is_idempotent_and_stop_joins(self) -> None:
         scheduler, _ = _make_scheduler()

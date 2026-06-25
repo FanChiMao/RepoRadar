@@ -155,5 +155,44 @@ class SimpleEndpointTests(unittest.TestCase):
             self.assertEqual({"sub_issues": True}, api_app.get_source_capabilities())
 
 
+class SyncOsSchedulerTests(unittest.TestCase):
+    def _run(self, *, enabled: list[bool], installed: bool):
+        schedules = [{"enabled": flag} for flag in enabled]
+        with (
+            patch.object(api_app.os_scheduler, "is_supported", return_value=True),
+            patch.object(api_app.pulse_store, "load_schedules", return_value=schedules),
+            patch.object(
+                api_app.os_scheduler, "status", return_value={"installed": installed}
+            ),
+            patch.object(api_app.os_scheduler, "register") as register,
+            patch.object(api_app.os_scheduler, "unregister") as unregister,
+        ):
+            api_app._sync_os_scheduler()
+        return register, unregister
+
+    def test_registers_when_enabled_and_not_installed(self) -> None:
+        register, unregister = self._run(enabled=[True, False], installed=False)
+        register.assert_called_once()
+        unregister.assert_not_called()
+
+    def test_unregisters_when_none_enabled(self) -> None:
+        register, unregister = self._run(enabled=[False], installed=True)
+        unregister.assert_called_once()
+        register.assert_not_called()
+
+    def test_noop_when_already_in_sync(self) -> None:
+        register, unregister = self._run(enabled=[True], installed=True)
+        register.assert_not_called()
+        unregister.assert_not_called()
+
+    def test_skips_on_unsupported_platform(self) -> None:
+        with (
+            patch.object(api_app.os_scheduler, "is_supported", return_value=False),
+            patch.object(api_app.os_scheduler, "status") as status,
+        ):
+            api_app._sync_os_scheduler()
+        status.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
