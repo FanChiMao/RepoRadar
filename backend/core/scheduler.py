@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from collections.abc import Callable
@@ -17,6 +18,8 @@ class TrackerScheduler:
         briefing_runner: Callable[[], None] | None = None,
         pulse_provider: Callable[[], list[dict]] | None = None,
         pulse_runner: Callable[[str], None] | None = None,
+        *,
+        synchronous: bool = False,
     ) -> None:
         self._config_provider = config_provider
         self._task_runner = task_runner
@@ -26,19 +29,68 @@ class TrackerScheduler:
         self._briefing_runner = briefing_runner
         self._pulse_provider = pulse_provider
         self._pulse_runner = pulse_runner
+        # synchronous=True runs queued jobs inline (used by the headless
+        # one-shot tick that the OS scheduler invokes); the long-running in-app
+        # loop keeps synchronous=False so it never blocks on a slow report.
+        self._synchronous = synchronous
         self._stop_event = threading.Event()
+        self._work_queue: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
+        self._worker: threading.Thread | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._stop_event.clear()
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker.start()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2)
+        self._work_queue.put(None)  # wake the worker so it can exit
+        for thread in (self._thread, self._worker):
+            if thread and thread.is_alive():
+                thread.join(timeout=2)
+
+    # ------------------------------------------------------------------ #
+    # Job dispatch
+    # ------------------------------------------------------------------ #
+    def _submit(self, fn: Callable[..., None], *args: object) -> None:
+        """Run a (possibly slow) report job without blocking the scheduling loop.
+
+        Each due job is handed to a single worker thread instead of being run
+        inline. That keeps ``tick``'s per-schedule ``_should_run`` evaluation
+        fast, so when several schedules share the same send time they all get
+        evaluated and queued within the same minute — previously a slow first
+        run would push later schedules past their target minute, and they were
+        silently skipped for the day. Serializing through one worker (rather
+        than spawning a thread per job) also prevents concurrent runs from
+        clobbering each other's read-modify-write on the shared history / run
+        state JSON files.
+
+        In ``synchronous`` mode (the headless OS-scheduler tick) the job runs
+        inline so the one-shot process finishes its work before exiting.
+        """
+        if self._synchronous:
+            self._run_job(fn, args)
+        else:
+            self._work_queue.put((fn, args))
+
+    @staticmethod
+    def _run_job(fn: Callable[..., None], args: tuple[object, ...]) -> None:
+        try:
+            fn(*args)
+        except Exception as exc:  # noqa: BLE001 — one bad run must not kill the worker
+            print(f"[scheduler] job error: {exc}")
+
+    def _worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            item = self._work_queue.get()
+            if item is None:
+                continue
+            self._run_job(*item)
 
     def _should_run(self, now: datetime, task_name: str, target_time: str) -> bool:
         hour, minute = (int(part) for part in target_time.split(":"))
@@ -76,12 +128,16 @@ class TrackerScheduler:
         if self._should_run(
             local, "daily_briefing", settings.get("send_time", "18:30")
         ):
-            self._briefing_runner()
+            self._submit(self._briefing_runner)
 
     def _check_pulse(self) -> None:
         """Multi-schedule AI Schedule trigger. Each schedule is evaluated in
         its own timezone; dedupe is keyed per schedule + local date so the same
-        schedule auto-sends at most once a day (Send Now bypasses this)."""
+        schedule auto-sends at most once a day (Send Now bypasses this).
+
+        Due schedules are dispatched via ``_submit`` so several schedules that
+        share a send time are all evaluated within the same minute instead of
+        the second one missing its window while the first one's report runs."""
         if not (self._pulse_provider and self._pulse_runner):
             return
 
@@ -100,27 +156,35 @@ class TrackerScheduler:
             if self._should_run(
                 local, f"pulse:{schedule_id}", schedule.get("send_time", "18:30")
             ):
-                self._pulse_runner(schedule_id)
+                self._submit(self._pulse_runner, schedule_id)
+
+    def tick_once(self) -> None:
+        """Run one full evaluation pass over every schedule type. The in-app
+        loop calls this every 30s; the headless OS-scheduler entry point calls
+        it once (in synchronous mode) so reports still fire when the app is
+        closed. Dedupe via the shared meta file keeps the two from
+        double-sending."""
+        now = datetime.now(UTC).astimezone()
+        config = self._config_provider()
+        if config.get("enable_daily_sync") and self._should_run(
+            now, "daily_sync", config.get("daily_sync_time", "09:00")
+        ):
+            self._submit(self._task_runner, "daily_sync")
+        if (
+            now.weekday() == 4
+            and config.get("enable_weekly_report")
+            and self._should_run(
+                now, "weekly_report", config.get("weekly_report_time", "17:30")
+            )
+        ):
+            self._submit(self._task_runner, "weekly_report")
+        self._check_briefing()
+        self._check_pulse()
 
     def _loop(self) -> None:
         while not self._stop_event.is_set():
-            now = datetime.now(UTC).astimezone()
-            config = self._config_provider()
             try:
-                if config.get("enable_daily_sync") and self._should_run(
-                    now, "daily_sync", config.get("daily_sync_time", "09:00")
-                ):
-                    self._task_runner("daily_sync")
-                if (
-                    now.weekday() == 4
-                    and config.get("enable_weekly_report")
-                    and self._should_run(
-                        now, "weekly_report", config.get("weekly_report_time", "17:30")
-                    )
-                ):
-                    self._task_runner("weekly_report")
-                self._check_briefing()
-                self._check_pulse()
-            except Exception as exc:
+                self.tick_once()
+            except Exception as exc:  # noqa: BLE001
                 print(f"[scheduler] error: {exc}")
             time.sleep(30)

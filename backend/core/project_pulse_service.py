@@ -13,6 +13,8 @@ tone/format/focus but can never override the safety rules.
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
@@ -29,6 +31,8 @@ from .project_pulse_store import default_instruction
 from .rag_service import SAFETY_RULES, collect_issue_context
 from .report_service import simplify_issue
 from .utils import parse_dt
+
+logger = logging.getLogger(__name__)
 
 # Per-issue context budget. Daily briefings intentionally carry more detail
 # because the window filter has already narrowed the issue set.
@@ -49,21 +53,53 @@ PULSE_SAFETY_RULES = (
     "- 不得宣稱已執行 GitLab/GitHub 寫入操作；報告只能摘要、分析與提出建議。\n"
 )
 
-_DAILY_FORMAT_RULES = (
+# Report format rules. The report STRUCTURE is driven by the user's custom
+# 整理指令 (so what they write is what they get); these rules only pin down the
+# things the structure shouldn't dictate — links and "stick to the instruction".
+_REPORT_FORMAT_RULES = (
     "報告格式：\n"
-    "- 聚焦選定範圍內的『更新』，不要重述整個 issue 歷史，必要時只補一句背景。\n"
-    "- 每個 issue 輸出：本期更新、目前狀態、風險或阻塞、建議下一步、來源。\n"
-    "- 依分類分段：🟢 有明確進展、🟡 需要追蹤、🔴 風險升高、⚪ 資訊更新。\n"
-    "- 最後補一段『✅ 建議優先順序』。\n"
-    "- 引用 issue 時用 #IID。\n"
+    "- 嚴格依照下方『使用者自訂整理指令』所描述的結構、段落、標題與順序輸出，"
+    "不要自行新增、刪減或重排章節。\n"
+    "- 每個 issue 的標題請輸出成 Markdown 超連結：[#IID 標題](該 issue 的來源 URL)，"
+    "URL 取自下方 Sources 中該 issue 的『來源：』欄位。\n"
+    "- 內文引用其他 issue 時用 [#IID](對應來源 URL)，不要只寫純文字 #IID。\n"
+    "- 聚焦本期變動，不要重述整個 issue 歷史；用繁體中文、精簡可執行。\n"
 )
 
-_CUSTOM_FORMAT_RULES = (
-    "報告格式：\n"
-    "- 依照使用者整理指令決定結構、口吻與重點。\n"
-    "- 仍須依重要性整理，並列出需要追蹤的事項、風險與建議下一步。\n"
-    "- 仍須附上來源連結，引用 issue 時用 #IID。\n"
-)
+# Matches a plain ``#123`` issue reference so it can be turned into a Markdown
+# link. The lookbehind skips refs that are already inside a Markdown label
+# (``[#123]``) or part of a longer token (``abc#123`` / ``##123``), so a heading
+# we already linkified is never double-wrapped.
+_ISSUE_REF_RE = re.compile(r"(?<![\w\[#/])#(\d+)\b")
+
+
+def _issue_url_map(issues: list[dict[str, Any]]) -> dict[int, str]:
+    """Map issue IID → web_url for the whole repo so any ``#123`` reference can
+    be linked, not just the issues selected for this report."""
+    mapping: dict[int, str] = {}
+    for issue in issues or []:
+        url = issue.get("web_url")
+        if not url:
+            continue
+        try:
+            mapping[int(issue.get("iid"))] = str(url)
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
+def linkify_issue_refs(message: str, url_map: dict[int, str]) -> str:
+    """Turn plain ``#123`` references into ``[#123](web_url)`` when the issue's
+    URL is known. Refs to unknown issues are left untouched."""
+    if not message or not url_map:
+        return message or ""
+
+    def replace(match: re.Match[str]) -> str:
+        iid = int(match.group(1))
+        url = url_map.get(iid)
+        return f"[#{iid}]({url})" if url else match.group(0)
+
+    return _ISSUE_REF_RE.sub(replace, message)
 
 
 # --------------------------------------------------------------------------- #
@@ -252,7 +288,57 @@ def _report_title(schedule: dict[str, Any]) -> str:
     return str(schedule.get("name") or "").strip() or "AI 排程"
 
 
-def _append_model_hint(message: str, used_model: str, requested_model: str) -> str:
+def _issue_heading(simplified: dict[str, Any], include_links: bool) -> str:
+    """``#IID 標題`` for an issue, as a Markdown link when its URL is known and
+    source links are enabled."""
+    iid = simplified.get("iid")
+    title = simplified.get("title") or ""
+    label = f"#{iid} {title}".strip()
+    url = simplified.get("web_url")
+    if include_links and url:
+        return f"[{label}]({url})"
+    return label
+
+
+# Redact anything that looks like a credential before a raw LLM/transport error
+# is surfaced in the report footer or persisted to run history.
+def _llm_failure_reason(exc: Exception) -> str:
+    """Map an LLM failure to a fixed, non-sensitive reason for the footer.
+
+    The exception text is inspected only to *categorise* the failure (control
+    flow); every branch returns a constant literal, so no raw exception or stack
+    detail — and therefore no credential that an upstream error string might
+    carry — can ever reach the report footer, run history, or the HTTP response.
+    The full exception is logged server-side for diagnosis instead.
+    """
+    detail = str(getattr(exc, "detail", None) or exc).lower()
+    if "timeout" in detail or "timed out" in detail or "逾時" in detail:
+        return "LLM 回應逾時"
+    if (
+        "429" in detail
+        or "rate limit" in detail
+        or "quota" in detail
+        or "額度" in detail
+    ):
+        return "LLM 服務限流或額度不足"
+    if "未設定" in detail or "not set" in detail or "not configured" in detail:
+        return "LLM 未設定"
+    if (
+        "401" in detail
+        or "403" in detail
+        or "unauthor" in detail
+        or "api key" in detail
+        or "金鑰" in detail
+    ):
+        return "LLM 認證失敗（請檢查 API 金鑰）"
+    if "json" in detail or "answer" in detail or "parse" in detail or "格式" in detail:
+        return "模型輸出格式無法解析"
+    return "LLM 呼叫失敗"
+
+
+def _append_model_hint(
+    message: str, used_model: str, requested_model: str, llm_error: str = ""
+) -> str:
     if used_model:
         hint = f"本次整理使用模型：{used_model}"
         if requested_model and requested_model != used_model:
@@ -261,7 +347,47 @@ def _append_model_hint(message: str, used_model: str, requested_model: str) -> s
         hint = f"本次整理使用模型：未使用 LLM（已改用規則式 fallback；原選 {requested_model}）"
     else:
         hint = "本次整理使用模型：未使用 LLM（規則式 fallback）"
+    # Only when we actually fell back: tell the user *why* (timeout / parse / 4xx)
+    # so frequent fallbacks can be diagnosed instead of guessed at.
+    if not used_model and llm_error:
+        hint += f"\nfallback 原因：{llm_error}"
     return f"{message.strip()}\n\n---\n{hint}".strip()
+
+
+def _report_header_lines(
+    title: str,
+    date_str: str,
+    index_built_at: str | None,
+    mode: str,
+    repo_name: str,
+    count: int,
+) -> list[str]:
+    """The fixed report preamble, shared by the rule-based and structured
+    renderers so both paths produce a byte-identical header."""
+    built_local = ""
+    if index_built_at:
+        dt = parse_dt(index_built_at)
+        if dt is not None:
+            built_local = dt.astimezone().strftime("%Y-%m-%d %H:%M")
+
+    lines: list[str] = [f"📌 {title}", f"Repo：{repo_name}", f"日期：{date_str}"]
+    if built_local:
+        lines.append(f"索引時間：{built_local}")
+    lines.append(f"範圍內有更新的 Issue：{count} 件")
+    lines.append(f"索引模式：{mode}")
+    lines.append("")
+    return lines
+
+
+def _group_by_category(
+    classified: list[tuple[dict[str, Any], list[dict[str, Any]], str, list[str]]],
+) -> dict[str, list[tuple[dict[str, Any], list[dict[str, Any]], list[str]]]]:
+    by_category: dict[
+        str, list[tuple[dict[str, Any], list[dict[str, Any]], list[str]]]
+    ] = {}
+    for simplified, chunks, category, changes in classified:
+        by_category.setdefault(category, []).append((simplified, chunks, changes))
+    return by_category
 
 
 def _assemble_rule_based(
@@ -277,24 +403,10 @@ def _assemble_rule_based(
     include_risks = bool(schedule.get("include_risks", True))
     include_next = bool(schedule.get("include_next_steps", True))
 
-    built_local = ""
-    if index_built_at:
-        dt = parse_dt(index_built_at)
-        if dt is not None:
-            built_local = dt.astimezone().strftime("%Y-%m-%d %H:%M")
-
-    lines: list[str] = [f"📌 {title}", f"Repo：{repo_name}", f"日期：{date_str}"]
-    if built_local:
-        lines.append(f"索引時間：{built_local}")
-    lines.append(f"範圍內有更新的 Issue：{len(classified)} 件")
-    lines.append(f"索引模式：{mode}")
-    lines.append("")
-
-    by_category: dict[
-        str, list[tuple[dict[str, Any], list[dict[str, Any]], list[str]]]
-    ] = {}
-    for simplified, chunks, category, changes in classified:
-        by_category.setdefault(category, []).append((simplified, chunks, changes))
+    lines = _report_header_lines(
+        title, date_str, index_built_at, mode, repo_name, len(classified)
+    )
+    by_category = _group_by_category(classified)
 
     for category in CATEGORY_ORDER:
         items = by_category.get(category)
@@ -302,9 +414,7 @@ def _assemble_rule_based(
             continue
         lines.append(category)
         for idx, (simplified, chunks, changes) in enumerate(items, start=1):
-            lines.append(
-                f"{idx}. #{simplified.get('iid')} {simplified.get('title') or ''}"
-            )
+            lines.append(f"{idx}. {_issue_heading(simplified, include_links)}")
             if changes:
                 lines.append(f"   - 變動：{'；'.join(changes)}")
             snippet = _chunk_snippet(chunks)
@@ -325,9 +435,7 @@ def _assemble_rule_based(
         if priority:
             lines.append("✅ 建議優先順序")
             for idx, (simplified, _chunks, _changes) in enumerate(priority, start=1):
-                lines.append(
-                    f"{idx}. #{simplified.get('iid')} {simplified.get('title') or ''}"
-                )
+                lines.append(f"{idx}. {_issue_heading(simplified, include_links)}")
 
     return "\n".join(lines).strip()
 
@@ -403,14 +511,12 @@ def _build_llm_contents(
     return [{"role": "user", "parts": [{"text": user_text}]}]
 
 
-def _system_instruction(report_type: str) -> str:
-    format_rules = (
-        _DAILY_FORMAT_RULES if report_type == "daily-briefing" else _CUSTOM_FORMAT_RULES
-    )
+def _system_instruction(_report_type: str) -> str:
     return (
-        f"{SAFETY_RULES}\n{PULSE_SAFETY_RULES}\n{format_rules}"
+        f"{SAFETY_RULES}\n{PULSE_SAFETY_RULES}\n{_REPORT_FORMAT_RULES}"
         "請使用繁體中文，精簡、可執行。\n"
-        '輸出必須是 JSON，格式為 {"answer":"..."}，answer 內含整份報告純文字/Markdown。\n'
+        '輸出必須是 JSON，格式為 {"answer":"..."}，'
+        "answer 內含整份報告（依使用者整理指令排版的 Markdown）。\n"
     )
 
 
@@ -422,12 +528,18 @@ def generate_pulse_report(
     *,
     issues: list[dict[str, Any]],
     index: dict[str, Any],
-    llm_caller: Callable[..., tuple[str, str]] | None = None,
+    llm_caller: Callable[..., tuple[Any, str]] | None = None,
     llm_preferred_model: str = "",
     llm_model_candidates: list[str] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Build a report dict for a schedule's repo. Pure: no send, no webhook."""
+    """Build a report dict for a schedule's repo. Pure: no send, no webhook.
+
+    ``llm_caller`` returns ``(answer, model)`` where ``answer`` is the report
+    Markdown laid out by the model per the schedule's custom 整理指令. On any
+    failure (or no LLM configured) the deterministic rule-based message is used,
+    and the reason is recorded on ``llm_error`` for the footer / run history.
+    """
     tz = _safe_zone(schedule.get("timezone", "Asia/Taipei"))
     now_local = now.astimezone(tz) if now is not None else datetime.now(tz)
     date_str = now_local.date().isoformat()
@@ -470,6 +582,7 @@ def generate_pulse_report(
             (simplified, chunks, classify_issue(simplified, chunks, True), changes)
         )
 
+    llm_error = ""
     base = {
         "ok": True,
         "schedule_id": schedule.get("id"),
@@ -481,19 +594,19 @@ def generate_pulse_report(
         "generated_at": generated_at,
         "requested_model": requested_model,
         "model": used_model,
+        "llm_error": "",
     }
 
     if not classified:
-        message = _append_model_hint(
-            _empty_message(title, repo_name, date_str, mode),
-            used_model,
-            requested_model,
-        )
+        # Nothing changed in the window: no LLM was ever called, so the
+        # model / fallback footer would just be noise. Omit it entirely.
         return {
             **base,
             "issue_count": 0,
-            "message": message,
+            "message": _empty_message(title, repo_name, date_str, mode),
         }
+
+    url_map = _issue_url_map(issues)
 
     message = _assemble_rule_based(
         title, date_str, index_built_at, mode, repo_name, classified, schedule
@@ -509,18 +622,32 @@ def generate_pulse_report(
                 preferred_model=llm_preferred_model,
                 model_candidates=model_candidates,
             )
-            if answer and answer.strip():
-                message = answer.strip()
+            # The LLM lays the report out per the user's 整理指令; we only swap in
+            # its answer when it actually produced one, else keep the rule-based
+            # fallback below.
+            if answer and str(answer).strip():
+                message = str(answer).strip()
                 used_model = model
-        except Exception:  # noqa: BLE001 — fall back to deterministic message
-            pass
+            else:
+                llm_error = "模型未回傳內容"
+        except Exception as exc:  # noqa: BLE001 — fall back to deterministic message
+            # Log the full error server-side for diagnosis, but surface only a
+            # categorised, constant reason so no raw exception / stack detail
+            # (or credential it might carry) reaches the footer / run history.
+            logger.warning("AI Schedule LLM call failed", exc_info=True)
+            llm_error = _llm_failure_reason(exc)
 
-    message = _append_model_hint(message, used_model, requested_model)
+    # Linkify any plain ``#123`` references (LLM output, or the rule-based body)
+    # so cross-referenced issues become clickable too. Headings are already
+    # wrapped as Markdown links and are skipped by the regex.
+    message = linkify_issue_refs(message, url_map)
+    message = _append_model_hint(message, used_model, requested_model, llm_error)
     return {
         **base,
         "issue_count": len(classified),
         "message": message,
         "model": used_model,
+        "llm_error": "" if used_model else llm_error,
     }
 
 

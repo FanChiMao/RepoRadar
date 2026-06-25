@@ -67,8 +67,14 @@ jobs:
               per_page: 100,
             };
 
+            // Scope the query to this PR's merge ref. listAlertsForRepo has no
+            // `pr` parameter (it is silently ignored), so the previous code
+            // effectively gated on the default branch and any pre-existing
+            // main alert blocked every PR. `ref` is supported and limits the
+            // result to alerts present in the PR's merged code, which is what
+            // the gate is meant to enforce.
             if (context.eventName === 'pull_request') {
-              params.pr = context.payload.pull_request.number;
+              params.ref = `refs/pull/${context.payload.pull_request.number}/merge`;
             }
 
             const alerts = await github.paginate(

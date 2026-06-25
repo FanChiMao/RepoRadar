@@ -58,13 +58,32 @@ function ensureSecretKey(dataDir: string): string | null {
       return null;
     }
     const keyPath = path.join(dataDir, 'secret.key');
-    if (fs.existsSync(keyPath)) {
+    // Read an existing key first; ENOENT is the only "not yet created" case.
+    // Avoiding an existsSync pre-check closes the time-of-check/time-of-use gap.
+    try {
+      const encrypted = Buffer.from(fs.readFileSync(keyPath, 'utf-8'), 'base64');
+      return safeStorage.decryptString(encrypted);
+    } catch (readError) {
+      if ((readError as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw readError;
+      }
+    }
+    // Create atomically: 'wx' fails with EEXIST if another launch won the race,
+    // in which case we read back the key it wrote so both agree on one key.
+    const rawKey = crypto.randomBytes(32).toString('base64');
+    try {
+      fs.writeFileSync(keyPath, safeStorage.encryptString(rawKey).toString('base64'), {
+        encoding: 'utf-8',
+        flag: 'wx',
+      });
+      return rawKey;
+    } catch (writeError) {
+      if ((writeError as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw writeError;
+      }
       const encrypted = Buffer.from(fs.readFileSync(keyPath, 'utf-8'), 'base64');
       return safeStorage.decryptString(encrypted);
     }
-    const rawKey = crypto.randomBytes(32).toString('base64');
-    fs.writeFileSync(keyPath, safeStorage.encryptString(rawKey).toString('base64'), 'utf-8');
-    return rawKey;
   } catch (error) {
     console.warn('[secrets] failed to load encryption key; using plaintext', error);
     return null;
@@ -489,13 +508,13 @@ function startBackend(): Promise<void> {
       ? path.join(app.getPath('userData'), 'repo-radar-data')
       : path.join(root, 'data');
 
-    // Ensure data dir exists
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-    // Create blank default config if none exists
+    // Ensure data dir exists (recursive mkdir is a no-op when it already does,
+    // so no existsSync pre-check is needed).
+    fs.mkdirSync(dataDir, { recursive: true });
+    // Create a blank default config only when absent. 'wx' makes "create if
+    // missing" atomic, so a concurrent launch can't race between check and write.
     const cfgPath = path.join(dataDir, 'config.json');
-    if (!fs.existsSync(cfgPath)) {
+    try {
       fs.writeFileSync(
         cfgPath,
         JSON.stringify(
@@ -513,7 +532,12 @@ function startBackend(): Promise<void> {
           null,
           2,
         ),
+        { flag: 'wx' },
       );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
     }
 
     const secretKey = ensureSecretKey(dataDir);

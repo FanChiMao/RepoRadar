@@ -16,13 +16,14 @@ from typing import Any
 
 import requests
 import uvicorn
+from core import os_scheduler, repo_registry
 from core import project_pulse_jobs as pulse_jobs
 from core import project_pulse_store as pulse_store
-from core import repo_registry
 from core.config_store import (
     CACHE_PATH,
     REPORT_DIR,
     append_briefing_history,
+    data_dir,
     load_briefing_history,
     load_briefing_settings,
     load_config,
@@ -394,6 +395,7 @@ def call_azure_model(
     temperature: float = 0.2,
     images: list[ImageAsset] | None = None,
     json_mode: bool = True,
+    timeout: int = 90,
 ) -> str:
     """依模型的 protocol 路由到對應的 Azure client，回傳模型輸出的純文字。"""
     if azure_protocol(model) == "anthropic":
@@ -402,6 +404,7 @@ def call_azure_model(
             system_instruction=system_instruction,
             messages=messages,
             images=images,
+            timeout=timeout,
         )
     return call_azure_openai(
         model=model,
@@ -410,6 +413,7 @@ def call_azure_model(
         temperature=temperature,
         images=images,
         json_mode=json_mode,
+        timeout=timeout,
     )
 
 
@@ -1029,6 +1033,14 @@ def _briefing_llm_caller():
     return None
 
 
+def _pulse_report_caller():
+    """LLM caller for AI Schedule reports, or None when no LLM is configured so
+    the service uses its deterministic rule-based layout."""
+    if load_config().get("gemini_api_key") or azure_model_names():
+        return call_pulse_report
+    return None
+
+
 def project_pulse_llm_models(preferred_model: str = "") -> list[str]:
     """AI Schedule prefers configured Azure models, then Gemini fallbacks."""
     available = [*azure_model_names(), *CHAT_RAG_LLM_MODELS]
@@ -1219,7 +1231,7 @@ def execute_pulse_run(
         schedule,
         issues=issues,
         index=index,
-        llm_caller=_briefing_llm_caller(),
+        llm_caller=_pulse_report_caller(),
         llm_preferred_model=pulse_models[0] if pulse_models else "",
         llm_model_candidates=pulse_models,
     )
@@ -1341,9 +1353,8 @@ def start_pulse_job(schedule_id: str, run_type: str, do_send: bool) -> dict[str,
     return {"async": True, "job_id": job_id, "status": "queued"}
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    STATE.scheduler = TrackerScheduler(
+def _build_scheduler(*, synchronous: bool = False) -> TrackerScheduler:
+    return TrackerScheduler(
         load_config,
         run_scheduled_task,
         load_meta,
@@ -1352,7 +1363,21 @@ async def lifespan(_app: FastAPI):
         briefing_runner=lambda: run_briefing_send("scheduled"),
         pulse_provider=pulse_store.load_schedules,
         pulse_runner=lambda schedule_id: run_pulse_send(schedule_id, "scheduled"),
+        synchronous=synchronous,
     )
+
+
+def run_scheduler_tick() -> None:
+    """One-shot evaluation used by the Windows Task Scheduler integration so AI
+    schedules still fire when the app is closed. Synchronous so the headless
+    process finishes any due report before exiting; the shared dedupe meta keeps
+    it from double-sending alongside a running app."""
+    _build_scheduler(synchronous=True).tick_once()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    STATE.scheduler = _build_scheduler()
     STATE.scheduler.start()
     yield
     if STATE.scheduler:
@@ -1513,6 +1538,27 @@ def _pulse_summary(schedules: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _sync_os_scheduler() -> None:
+    """Bind the OS-level background runner to the schedules' enabled state:
+    register the Windows task while at least one schedule is enabled, remove it
+    once none are. This is what makes each schedule's enable/disable toggle also
+    control whether it keeps firing after the app is closed — no separate switch.
+
+    Best-effort: a Task Scheduler hiccup (or a non-Windows host) must never break
+    schedule CRUD."""
+    if not os_scheduler.is_supported():
+        return
+    try:
+        any_enabled = any(s.get("enabled") for s in pulse_store.load_schedules())
+        installed = bool(os_scheduler.status().get("installed"))
+        if any_enabled and not installed:
+            os_scheduler.register(data_dir=str(data_dir()))
+        elif not any_enabled and installed:
+            os_scheduler.unregister()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[project-pulse] OS scheduler sync skipped: {exc}")
+
+
 @app.get("/api/project-pulse/schedules")
 def list_pulse_schedules() -> dict[str, Any]:
     public = pulse_store.public_schedules()
@@ -1535,6 +1581,7 @@ def create_pulse_schedule(payload: PulseSchedulePayload) -> dict[str, Any]:
         last_run_error="",
         next_run_at=compute_next_run(schedule),
     )
+    _sync_os_scheduler()
     return pulse_store.public_schedule(_require_schedule(schedule["id"]))
 
 
@@ -1552,6 +1599,7 @@ def update_pulse_schedule(
         last_run_error=updated.get("last_run_error") or "",
         next_run_at=compute_next_run(updated),
     )
+    _sync_os_scheduler()
     return pulse_store.public_schedule(_require_schedule(schedule_id))
 
 
@@ -1559,6 +1607,7 @@ def update_pulse_schedule(
 def remove_pulse_schedule(schedule_id: str) -> dict[str, Any]:
     if not pulse_store.delete_schedule(schedule_id):
         raise HTTPException(status_code=404, detail="找不到這筆 AI 排程。")
+    _sync_os_scheduler()
     return {"ok": True}
 
 
@@ -1647,6 +1696,15 @@ def get_pulse_history(
             schedule_id=schedule_id, repo_id=repo_id, limit=limit
         )
     }
+
+
+@app.get("/api/project-pulse/os-scheduler")
+def get_os_scheduler() -> dict[str, Any]:
+    """Status of the OS-level (Windows Task Scheduler) background runner that
+    fires AI schedules even when the app is closed. Its lifecycle is bound to the
+    schedules' enabled state — see ``_sync_os_scheduler`` — so there is no manual
+    toggle; this is read-only for the UI."""
+    return os_scheduler.status()
 
 
 @app.post("/api/connection/test")
@@ -2322,6 +2380,114 @@ def call_gemini_answer(
 
                 return str(result.get("answer", "")).strip(), model
 
+            except requests.exceptions.HTTPError as exc:
+                last_error = (
+                    exc.response.text[:500] if exc.response is not None else str(exc)
+                )
+                if exc.response is not None and exc.response.status_code >= 500:
+                    continue
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+
+    raise HTTPException(status_code=502, detail=f"Gemini API 錯誤：{last_error}")
+
+
+# Reports are batch (not interactive), so they get a longer LLM budget than the
+# 90s chat path — fewer spurious timeouts → fewer rule-based fallbacks.
+_PULSE_LLM_TIMEOUT = 180
+
+_PULSE_ANSWER_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"answer": {"type": "STRING"}},
+    "required": ["answer"],
+}
+
+
+def call_pulse_report(
+    *,
+    system_instruction: str,
+    contents: list[dict[str, Any]],
+    preferred_model: str,
+    model_candidates: list[str],
+) -> tuple[str, str]:
+    """Report sibling of :func:`call_gemini_answer` for AI Schedule.
+
+    Returns ``(answer, model)`` where ``answer`` is the report Markdown the model
+    laid out per the schedule's custom 整理指令. Differs from the chat caller by
+    using ``temperature=0`` (steadier day-to-day output) and a longer timeout."""
+    config = load_config()
+    gemini_key = config.get("gemini_api_key", "")
+
+    models = build_model_chain(
+        preferred_model=preferred_model,
+        model_candidates=model_candidates,
+        default_models=CHAT_RAG_LLM_MODELS,
+    )
+
+    last_error = ""
+    for model in models:
+        if is_azure_model(model):
+            try:
+                azure_system = (
+                    f"{system_instruction}\n\n"
+                    '請只輸出單一有效的 JSON 物件，格式為 {"answer": "..."}，'
+                    "不要 markdown、不要 code block、不要任何多餘文字。"
+                )
+                raw_response = call_azure_model(
+                    model,
+                    azure_system,
+                    gemini_contents_to_messages(contents),
+                    temperature=0,
+                    timeout=_PULSE_LLM_TIMEOUT,
+                )
+                result = extract_json_object(raw_response)
+                answer = str(result.get("answer", "")).strip()
+                if not answer:
+                    raise ValueError("Missing answer field")
+                return answer, model
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                continue
+
+        if not gemini_key:
+            last_error = "Gemini API Key 未設定。"
+            continue
+
+        gemini_url = _gemini_generate_url(model, gemini_key)
+        payload_json = {
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0,
+                "responseMimeType": "application/json",
+                "responseSchema": _PULSE_ANSWER_SCHEMA,
+            },
+        }
+
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    gemini_url, json=payload_json, timeout=_PULSE_LLM_TIMEOUT
+                )
+                if resp.status_code == 429:
+                    import time
+
+                    time.sleep(2**attempt)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    raise ValueError("No candidates returned")
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text_parts = [p.get("text", "").strip() for p in parts if p.get("text")]
+                result = extract_json_object("\n".join(text_parts).strip())
+                answer = str(result.get("answer", "")).strip()
+                if not answer:
+                    raise ValueError("Missing answer field")
+                return answer, model
             except requests.exceptions.HTTPError as exc:
                 last_error = (
                     exc.response.text[:500] if exc.response is not None else str(exc)

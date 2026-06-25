@@ -288,9 +288,8 @@ class GenerationTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(0, report["issue_count"])
         self.assertIn("沒有", report["message"])
-        self.assertIn(
-            "本次整理使用模型：未使用 LLM（規則式 fallback）", report["message"]
-        )
+        # No updates → no LLM ran, so the model / fallback footer is omitted.
+        self.assertNotIn("本次整理使用模型", report["message"])
         self.assertEqual("cache", report["mode"])
 
     def test_rule_based_report_lists_issues(self) -> None:
@@ -315,9 +314,72 @@ class GenerationTests(unittest.TestCase):
             "本次整理使用模型：未使用 LLM（規則式 fallback）", report["message"]
         )
 
-    def test_llm_report_appends_used_model_hint(self) -> None:
+    def _one_issue(self):
+        return [
+            {
+                "iid": 88,
+                "title": "Model hint",
+                "state": "opened",
+                "updated_at": "2026-06-08T09:00:00+08:00",
+            }
+        ]
+
+    def test_fallback_reason_surfaced_and_categorised(self) -> None:
+        def boom(**_kwargs):
+            raise RuntimeError("Gemini API 錯誤：timeout key=SUPERSECRET sig=abc")
+
+        now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
+        report = service.generate_pulse_report(
+            self._schedule(),
+            issues=self._one_issue(),
+            index={},
+            llm_caller=boom,
+            now=now,
+        )
+        self.assertEqual("", report["model"])
+        # The fallback reason is surfaced, but only as a fixed category — never
+        # the raw exception text — so a timeout reads as a known reason.
+        self.assertIn("fallback 原因：", report["message"])
+        self.assertIn("LLM 回應逾時", report["message"])
+        self.assertEqual("LLM 回應逾時", report["llm_error"])
+        # No raw error fragment (and so no credential it carried) may leak.
+        self.assertNotIn("SUPERSECRET", report["message"])
+        self.assertNotIn("SUPERSECRET", report["llm_error"])
+        self.assertNotIn("key=", report["message"])
+
+    def test_failure_reason_categories(self) -> None:
+        cases = {
+            "HTTP 429 rate limit exceeded": "LLM 服務限流或額度不足",
+            "401 Unauthorized: invalid api key": "LLM 認證失敗（請檢查 API 金鑰）",
+            "Missing answer field in JSON": "模型輸出格式無法解析",
+            "Gemini API Key 未設定。": "LLM 未設定",
+            "connection reset by peer": "LLM 呼叫失敗",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(
+                expected, service._llm_failure_reason(RuntimeError(text)), text
+            )
+
+    def test_empty_answer_reports_reason(self) -> None:
+        def empty(**_kwargs):
+            return ("", "gpt-5.4")
+
+        now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
+        report = service.generate_pulse_report(
+            self._schedule(),
+            issues=self._one_issue(),
+            index={},
+            llm_caller=empty,
+            now=now,
+        )
+        self.assertEqual("", report["model"])
+        self.assertIn("模型未回傳內容", report["message"])
+
+    def test_llm_answer_is_used_verbatim_with_model_hint(self) -> None:
+        # The LLM lays the report out per the user's 整理指令; we use its answer
+        # as-is (only appending the model footer + linkifying refs).
         def fake_llm(**_kwargs):
-            return ("主管摘要", "gpt-5.4")
+            return ("## 今日總結\n變動 1 件，詳見 #88。", "gpt-5.4")
 
         now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
         issues = [
@@ -326,6 +388,7 @@ class GenerationTests(unittest.TestCase):
                 "title": "Model hint",
                 "state": "opened",
                 "updated_at": "2026-06-08T09:00:00+08:00",
+                "web_url": "https://example.com/issues/88",
             }
         ]
         report = service.generate_pulse_report(
@@ -337,7 +400,9 @@ class GenerationTests(unittest.TestCase):
             now=now,
         )
         self.assertEqual("gpt-5.4", report["model"])
-        self.assertTrue(report["message"].startswith("主管摘要"))
+        self.assertTrue(report["message"].startswith("## 今日總結"))
+        # Plain #88 in the model's answer is linkified against the repo's URLs.
+        self.assertIn("[#88](https://example.com/issues/88)", report["message"])
         self.assertIn(
             "本次整理使用模型：gpt-5.4（原選 Kimi-K2.5，已自動切換）",
             report["message"],
@@ -349,7 +414,7 @@ class GenerationTests(unittest.TestCase):
         def fake_llm(*, system_instruction, contents, **_kwargs):
             captured["system"] = system_instruction
             captured["contents"] = contents
-            return ('{"answer":"報告"}', "fake-model")
+            return ("報告", "fake-model")
 
         now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
         issues = [
@@ -388,7 +453,7 @@ class GenerationTests(unittest.TestCase):
         def fake_llm(*, system_instruction, contents, **_kwargs):
             captured["system"] = system_instruction
             captured["contents"] = contents
-            return ('{"answer":"報告"}', "fake-model")
+            return ("報告", "fake-model")
 
         now = datetime.fromisoformat("2026-06-08T18:30:00+08:00")
         issues = [
@@ -424,7 +489,9 @@ class GenerationTests(unittest.TestCase):
         )
 
         user_text = captured["contents"][0]["parts"][0]["text"]
-        self.assertIn("本期更新", captured["system"])
+        # The report layout follows the user's 整理指令 (delivered in user_text),
+        # while the system prompt pins the format guardrails.
+        self.assertIn("報告格式", captured["system"])
         self.assertIn("issue 已關閉", user_text)
         self.assertIn("issue 本體更新", user_text)
         self.assertIn("新增或更新留言", user_text)
@@ -590,6 +657,35 @@ class ScopedReindexTests(unittest.TestCase):
 
         index = read_json(repo_path, {})
         self.assertTrue(index.get("chunks"))
+
+
+class LinkifyTests(unittest.TestCase):
+    def test_issue_url_map_skips_missing_url_or_iid(self) -> None:
+        mapping = service._issue_url_map(
+            [
+                {"iid": 1, "web_url": "https://x/1"},
+                {"iid": 2},  # no url → skipped
+                {"web_url": "https://x/9"},  # no iid → skipped
+            ]
+        )
+        self.assertEqual({1: "https://x/1"}, mapping)
+
+    def test_linkify_wraps_known_refs_only(self) -> None:
+        url_map = {123: "https://x/123"}
+        out = service.linkify_issue_refs("see #123 and #999", url_map)
+        self.assertEqual("see [#123](https://x/123) and #999", out)
+
+    def test_linkify_skips_already_linked_headings(self) -> None:
+        url_map = {123: "https://x/123"}
+        out = service.linkify_issue_refs("[#123 title](https://x/123)", url_map)
+        self.assertEqual("[#123 title](https://x/123)", out)
+
+    def test_issue_heading_links_when_enabled(self) -> None:
+        simplified = {"iid": 5, "title": "Bug", "web_url": "https://x/5"}
+        self.assertEqual(
+            "[#5 Bug](https://x/5)", service._issue_heading(simplified, True)
+        )
+        self.assertEqual("#5 Bug", service._issue_heading(simplified, False))
 
 
 if __name__ == "__main__":
