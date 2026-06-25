@@ -13,6 +13,7 @@ tone/format/focus but can never override the safety rules.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, time, timedelta
@@ -30,6 +31,8 @@ from .project_pulse_store import default_instruction
 from .rag_service import SAFETY_RULES, collect_issue_context
 from .report_service import simplify_issue
 from .utils import parse_dt
+
+logger = logging.getLogger(__name__)
 
 # Per-issue context budget. Daily briefings intentionally carry more detail
 # because the window filter has already narrowed the issue set.
@@ -299,13 +302,38 @@ def _issue_heading(simplified: dict[str, Any], include_links: bool) -> str:
 
 # Redact anything that looks like a credential before a raw LLM/transport error
 # is surfaced in the report footer or persisted to run history.
-_SECRET_RE = re.compile(r"(key|sig|token|api[-_]?key)=[^\s&\"']+", re.IGNORECASE)
+def _llm_failure_reason(exc: Exception) -> str:
+    """Map an LLM failure to a fixed, non-sensitive reason for the footer.
 
-
-def _scrub_error(text: Any) -> str:
-    cleaned = _SECRET_RE.sub(r"\1=***", str(text or ""))
-    cleaned = " ".join(cleaned.split())
-    return cleaned[:200]
+    The exception text is inspected only to *categorise* the failure (control
+    flow); every branch returns a constant literal, so no raw exception or stack
+    detail — and therefore no credential that an upstream error string might
+    carry — can ever reach the report footer, run history, or the HTTP response.
+    The full exception is logged server-side for diagnosis instead.
+    """
+    detail = str(getattr(exc, "detail", None) or exc).lower()
+    if "timeout" in detail or "timed out" in detail or "逾時" in detail:
+        return "LLM 回應逾時"
+    if (
+        "429" in detail
+        or "rate limit" in detail
+        or "quota" in detail
+        or "額度" in detail
+    ):
+        return "LLM 服務限流或額度不足"
+    if "未設定" in detail or "not set" in detail or "not configured" in detail:
+        return "LLM 未設定"
+    if (
+        "401" in detail
+        or "403" in detail
+        or "unauthor" in detail
+        or "api key" in detail
+        or "金鑰" in detail
+    ):
+        return "LLM 認證失敗（請檢查 API 金鑰）"
+    if "json" in detail or "answer" in detail or "parse" in detail or "格式" in detail:
+        return "模型輸出格式無法解析"
+    return "LLM 呼叫失敗"
 
 
 def _append_model_hint(
@@ -603,9 +631,11 @@ def generate_pulse_report(
             else:
                 llm_error = "模型未回傳內容"
         except Exception as exc:  # noqa: BLE001 — fall back to deterministic message
-            # HTTPException carries the useful text on ``.detail``; scrub any
-            # credential before it reaches the footer / run history.
-            llm_error = _scrub_error(getattr(exc, "detail", None) or exc)
+            # Log the full error server-side for diagnosis, but surface only a
+            # categorised, constant reason so no raw exception / stack detail
+            # (or credential it might carry) reaches the footer / run history.
+            logger.warning("AI Schedule LLM call failed", exc_info=True)
+            llm_error = _llm_failure_reason(exc)
 
     # Linkify any plain ``#123`` references (LLM output, or the rule-based body)
     # so cross-referenced issues become clickable too. Headings are already

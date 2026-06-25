@@ -324,7 +324,7 @@ class GenerationTests(unittest.TestCase):
             }
         ]
 
-    def test_fallback_reason_surfaced_and_scrubbed(self) -> None:
+    def test_fallback_reason_surfaced_and_categorised(self) -> None:
         def boom(**_kwargs):
             raise RuntimeError("Gemini API 錯誤：timeout key=SUPERSECRET sig=abc")
 
@@ -337,12 +337,28 @@ class GenerationTests(unittest.TestCase):
             now=now,
         )
         self.assertEqual("", report["model"])
+        # The fallback reason is surfaced, but only as a fixed category — never
+        # the raw exception text — so a timeout reads as a known reason.
         self.assertIn("fallback 原因：", report["message"])
-        self.assertIn("timeout", report["message"])
-        # Credentials in the raw error must never reach the footer / history.
-        self.assertIn("key=***", report["message"])
+        self.assertIn("LLM 回應逾時", report["message"])
+        self.assertEqual("LLM 回應逾時", report["llm_error"])
+        # No raw error fragment (and so no credential it carried) may leak.
         self.assertNotIn("SUPERSECRET", report["message"])
         self.assertNotIn("SUPERSECRET", report["llm_error"])
+        self.assertNotIn("key=", report["message"])
+
+    def test_failure_reason_categories(self) -> None:
+        cases = {
+            "HTTP 429 rate limit exceeded": "LLM 服務限流或額度不足",
+            "401 Unauthorized: invalid api key": "LLM 認證失敗（請檢查 API 金鑰）",
+            "Missing answer field in JSON": "模型輸出格式無法解析",
+            "Gemini API Key 未設定。": "LLM 未設定",
+            "connection reset by peer": "LLM 呼叫失敗",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(
+                expected, service._llm_failure_reason(RuntimeError(text)), text
+            )
 
     def test_empty_answer_reports_reason(self) -> None:
         def empty(**_kwargs):
