@@ -35,6 +35,19 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pyinstaller
       
+      - name: Write backend .env from secrets
+        shell: pwsh
+        run: |
+          @'
+          AZURE_LLM_ENABLED=${{ secrets.AZURE_LLM_ENABLED }}
+          AZURE_LLM_ENDPOINT=${{ secrets.AZURE_LLM_ENDPOINT }}
+          AZURE_LLM_API_KEY=${{ secrets.AZURE_LLM_API_KEY }}
+          AZURE_LLM_API_VERSION=${{ secrets.AZURE_LLM_API_VERSION }}
+          AZURE_LLM_MODEL_1=${{ secrets.AZURE_LLM_MODEL_1 }}
+          AZURE_LLM_MODEL_2=${{ secrets.AZURE_LLM_MODEL_2 }}
+          AZURE_LLM_MODEL_3=${{ secrets.AZURE_LLM_MODEL_3 }}
+          '@ | Set-Content -Path backend/.env -Encoding utf8NoBOM
+
       - name: Check formatting (Prettier + Black)
         run: |
           npx prettier --check "*.{json,md}" "src/**/*.ts" "frontend/**/*.{ts,html,css}"
@@ -47,6 +60,14 @@ jobs:
         run: python -m ruff check backend
 
       - name: Run backend tests
+        env:
+          AZURE_LLM_ENABLED: ${{ secrets.AZURE_LLM_ENABLED }}
+          AZURE_LLM_ENDPOINT: ${{ secrets.AZURE_LLM_ENDPOINT }}
+          AZURE_LLM_API_KEY: ${{ secrets.AZURE_LLM_API_KEY }}
+          AZURE_LLM_API_VERSION: ${{ secrets.AZURE_LLM_API_VERSION }}
+          AZURE_LLM_MODEL_1: ${{ secrets.AZURE_LLM_MODEL_1 }}
+          AZURE_LLM_MODEL_2: ${{ secrets.AZURE_LLM_MODEL_2 }}
+          AZURE_LLM_MODEL_3: ${{ secrets.AZURE_LLM_MODEL_3 }}
         run: python -m pytest backend/tests
 
       - name: Run frontend tests

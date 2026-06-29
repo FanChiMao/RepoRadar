@@ -317,6 +317,20 @@ function backendRoot(): string {
   return path.join(__dirname, '..', '..', 'backend');
 }
 
+function loadBundledEnv(root: string): NodeJS.ProcessEnv {
+  const envPath = path.join(root, '.env');
+  if (!fs.existsSync(envPath)) return {};
+  const result: NodeJS.ProcessEnv = {};
+  for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 1) continue;
+    result[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  }
+  return result;
+}
+
 function clampZoomFactor(zoomFactor: number): number {
   return Math.min(MAX_ZOOM_FACTOR, Math.max(MIN_ZOOM_FACTOR, Number(zoomFactor.toFixed(2))));
 }
@@ -543,6 +557,7 @@ function startBackend(): Promise<void> {
     const secretKey = ensureSecretKey(dataDir);
     const backendEnv: NodeJS.ProcessEnv = {
       ...process.env,
+      ...loadBundledEnv(root),
       REPO_RADAR_DATA_DIR: dataDir,
       REPO_RADAR_SESSION_TOKEN: SESSION_TOKEN,
     };
