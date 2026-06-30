@@ -24,4 +24,4 @@ Repo Radar 採 Electron main process、partial-based frontend 與 Python FastAPI
 
 - `backend/app.py` 仍包含 routing、AI、analytics、同步與 HTML 報表組裝，並非單純 composition root。
 - `frontend/scripts/legacy-app.ts` 已超過 6,000 行，包含大部分 renderer 狀態與 provider-aware UI。
-- Loopback API 無驗證；backend secrets 仍以明碼寫入 `config.json`。
+- Loopback API 以 per-launch session token(`X-Session-Token`)驗證；backend secrets 仍以明碼寫入 `config.json`。

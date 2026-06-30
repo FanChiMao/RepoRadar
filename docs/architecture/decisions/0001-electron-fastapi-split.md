@@ -27,4 +27,4 @@
 
 - 需等待 backend health check，port `8765` 衝突目前無 fallback。
 - Build 同時包含 TypeScript、PyInstaller 與 electron-builder。
-- Loopback API 目前無驗證，必須限制 CORS 並避免回傳 secrets。
+- Loopback API 必須限制 CORS 並避免回傳 secrets。(後續已新增 per-launch session token 驗證,見 [安全文件](../../security/SECURITY.md)。)

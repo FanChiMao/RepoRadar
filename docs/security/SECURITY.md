@@ -28,9 +28,10 @@ User -> Electron -> loopback FastAPI
 - Backend 只 bind loopback。
 - CORS 允許 `null`、`http://127.0.0.1:8765`、`http://localhost:8765`。
 - `allow_credentials=false`。
-- Loopback API **沒有 authentication/session secret**。同一台機器上的其他程式仍可能呼叫 API，這是尚未解決的風險。
-
-建議後續為每次啟動建立 session secret，並限制 mutation routes。
+- Loopback API 採用 **per-launch session token**:`src/main.ts` 以 `crypto.randomBytes(32)` 產生 token,透過 `REPO_RADAR_SESSION_TOKEN` 環境變數傳給 backend,renderer 經 `getSessionToken` bridge 取得後,於每個請求帶上 `X-Session-Token` header。
+  - Backend middleware 在 token 已設定時強制驗證,僅 `/api/health`(Electron readiness 探測需在 renderer 取得 token 前可用)與 CORS preflight(`OPTIONS`)豁免;驗證失敗回傳 `401 {"detail":"Invalid session."}`。
+  - token 未設定(raw `uvicorn` 開發或測試)時略過驗證,維持既有流程。
+  - 此機制能阻擋同機其他程式直接呼叫 API,但 token 仍是明碼經環境變數傳遞,屬剩餘風險。
 
 ## Provider 權限與傳輸
 
@@ -44,7 +45,7 @@ User -> Electron -> loopback FastAPI
 | 風險                        | 狀態/緩解                                                      |
 | --------------------------- | -------------------------------------------------------------- |
 | Backend config 明碼 secret  | 尚未解決；限制 OS 檔案權限，規劃 OS keyring                    |
-| Loopback API 無驗證         | 尚未解決；CORS 與 loopback bind 只能降低曝露                   |
+| 同機其他程式呼叫 API        | 以 per-launch session token(`X-Session-Token`)驗證,搭配 CORS 與 loopback bind |
 | GitLab `verify_ssl=false`   | 使用者需確認內網信任；正式環境應開啟驗證                       |
 | Renderer XSS                | Provider title/body 屬外部資料；使用 `innerHTML` 前必須 escape |
 | LLM prompt injection        | AI output 只作文字顯示，不執行；不得把 secrets 放入 prompt     |
@@ -57,7 +58,7 @@ User -> Electron -> loopback FastAPI
 
 - `contextIsolation: true`
 - `nodeIntegration: false`
-- Preload 只暴露 `openFileDialog`、`openPath`、`exportPdf`、`getAppVersion`
+- Preload 只暴露 `openFileDialog`、`openPath`、`exportPdf`、`getAppVersion`、`getSessionToken`
 
 ## 資料清除與回報
 
