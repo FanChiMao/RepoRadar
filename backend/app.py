@@ -804,13 +804,44 @@ def caption_image(model: str, asset: ImageAsset) -> str:
     return "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
 
 
+def _normalize_to_base_url(url: str, old_netloc: str, new_netloc: str) -> str:
+    """Rewrite url's netloc from old_netloc to new_netloc (no-op when they match)."""
+    from urllib.parse import urlparse, urlunparse
+
+    if not url or old_netloc == new_netloc:
+        return url
+    parsed = urlparse(url)
+    if parsed.netloc == old_netloc:
+        return urlunparse(parsed._replace(netloc=new_netloc))
+    return url
+
+
 def prepare_note_images(
     client: Any, issue: dict[str, Any], discussions: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[ImageAsset]]:
     """下載留言圖片、轉描述，回傳 (已把圖片 markdown 換成【圖片#k：描述】的 discussions, assets)。"""
+    from urllib.parse import urlparse
+
     web_url = issue.get("web_url")
     project_web_base = project_web_base_from_issue_url(web_url)
     base_url = getattr(client, "base_url", "") or getattr(client, "web_base_url", "")
+
+    # GitLab's external_url (often LAN IP) may differ from the internally reachable
+    # address (loopback).  Rewrite project_web_base and absolute image URLs so that
+    # downloads go through the address the client can actually reach.
+    _pwb_netloc = urlparse(project_web_base).netloc if project_web_base else ""
+    _base_netloc = urlparse(base_url).netloc if base_url else ""
+    _base_host = (urlparse(base_url).hostname or "").lower()
+    _should_rewrite = (
+        _pwb_netloc
+        and _base_netloc
+        and _pwb_netloc != _base_netloc
+        and _base_host in {"localhost", "127.0.0.1", "::1"}
+    )
+    if _should_rewrite:
+        project_web_base = _normalize_to_base_url(
+            project_web_base, _pwb_netloc, _base_netloc
+        )
     provider_name = getattr(client, "provider_name", "")
     project_ref = str(issue.get("source_ref") or "")
 
@@ -825,15 +856,16 @@ def prepare_note_images(
     for pos, (_note, refs) in enumerate(note_refs):
         for ref in refs:
             flat.append((pos, ref))
-            resolved_urls.append(
-                resolve_image_url(
-                    ref,
-                    provider_name=provider_name,
-                    base_url=base_url,
-                    project_ref=project_ref,
-                    project_web_base=project_web_base,
-                )
+            resolved = resolve_image_url(
+                ref,
+                provider_name=provider_name,
+                base_url=base_url,
+                project_ref=project_ref,
+                project_web_base=project_web_base,
             )
+            if _should_rewrite:
+                resolved = _normalize_to_base_url(resolved, _pwb_netloc, _base_netloc)
+            resolved_urls.append(resolved)
 
     if not flat:
         return discussions, []

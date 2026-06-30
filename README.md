@@ -1,15 +1,17 @@
 <div align="center">
 
-<img src="assets/icon.png" alt="Repo Radar" width="120" />
-
 # Repo Radar
 
 **集中同步、分析與彙整 GitLab / GitHub Issues 的 AI 桌面應用程式**
 
-[![CI](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml/badge.svg)](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml)
-[![latest](https://img.shields.io/github/v/release/FanChiMao/RepoRadar?label=latest%20release)](https://github.com/FanChiMao/RepoRadar/releases/latest)
-[![Backend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=backend&logo=python&logoColor=white&label=Backend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=backend)
-[![Frontend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=frontend&logo=vite&logoColor=white&label=Frontend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=frontend)
+[![CI](https://img.shields.io/github/actions/workflow/status/FanChiMao/RepoRadar/main.yml?branch=main&style=flat&label=CI)](https://github.com/FanChiMao/RepoRadar/actions/workflows/main.yml)
+[![latest](https://img.shields.io/github/v/release/FanChiMao/RepoRadar?style=flat&label=latest%20release)](https://github.com/FanChiMao/RepoRadar/releases/latest)
+[![Backend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=backend&style=flat&logo=python&logoColor=white&label=Backend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=backend)
+[![Frontend Coverage](https://img.shields.io/codecov/c/github/FanChiMao/RepoRadar?flag=frontend&style=flat&logo=vite&logoColor=white&label=Frontend%20Coverage)](https://codecov.io/gh/FanChiMao/RepoRadar?flags%5B0%5D=frontend)
+
+<a href="https://youtu.be/UtHWj6HaNQ8" title="Repo Radar Demo (YouTube)">
+  <img src="https://img.youtube.com/vi/UtHWj6HaNQ8/maxresdefault.jpg" alt="觀看 Repo Radar Demo 影片" title="▶️ 點擊觀看 Repo Radar Demo 影片 (YouTube)" width="640" />
+</a>
 
 </div>
 
@@ -100,7 +102,7 @@ Electron 啟動後會執行 loopback FastAPI;health endpoint 為 `http://127.0.0
 - `meta.json`:同步狀態與排程資訊。
 - `reports/` / `arrange_exports/`:報表與 Arrange 匯出。
 
-`GET /api/config` 不回傳 token/API key,frontend localStorage 也不保存 secrets。Loopback API 目前沒有驗證機制,詳見[安全文件](docs/security/SECURITY.md)。
+`GET /api/config` 不回傳 token/API key,frontend localStorage 也不保存 secrets。Loopback API 採用每次啟動產生的 session token:Electron main process 產生隨機 token、透過 `REPO_RADAR_SESSION_TOKEN` 傳給 backend,renderer 則於每個請求帶上 `X-Session-Token` header。未設定 token 時(例如直接以 `uvicorn` 跑開發或測試)會略過驗證。詳見[安全文件](docs/security/SECURITY.md)。
 
 ## ✅ 驗證
 

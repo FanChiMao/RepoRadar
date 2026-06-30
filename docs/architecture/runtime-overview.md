@@ -23,11 +23,13 @@ flowchart LR
 
 ## 啟動流程
 
-1. Electron 啟動 Python `backend/app.py` 或 packaged backend executable。
-2. Main process 輪詢 `GET /api/health`，後端固定 bind `127.0.0.1:8765`。
-3. Electron 載入 `frontend/index.html`。
-4. `bootstrap.js` 載入 partials，再掛載 `dist/frontend/scripts/legacy-app.js`。
-5. Frontend 讀取 config、capabilities、dashboard 與 issues。
+1. Electron main 產生 per-launch session token,並以 `REPO_RADAR_SESSION_TOKEN` 傳入 backend。
+2. Electron 啟動 Python `backend/app.py` 或 packaged backend executable。
+3. Main process 輪詢 `GET /api/health`(此 route 豁免 token),後端固定 bind `127.0.0.1:8765`。
+4. Electron 載入 `frontend/index.html`。
+5. `bootstrap.js` 載入 partials，再掛載 `dist/frontend/scripts/legacy-app.js`。
+6. Frontend 經 `getSessionToken` bridge 取得 token,之後每個 API 請求都帶 `X-Session-Token`。
+7. Frontend 讀取 config、capabilities、dashboard 與 issues。
 
 開發模式優先使用 `.venv\Scripts\python.exe`；封裝模式使用 `backend/dist/repo-radar-backend/`。
 

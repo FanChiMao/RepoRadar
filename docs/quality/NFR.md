@@ -51,7 +51,7 @@ GitHub relation 不在 bulk list 預抓，Issue Detail 才 lazy-load，以控制
 ## 安全
 
 - Backend 僅 bind loopback，CORS 限制本機 origins。
-- Loopback API 仍無驗證；backend config secrets 仍明碼。
+- Loopback API 以 per-launch session token(`X-Session-Token`)驗證；backend config secrets 仍明碼。
 - GET config 與 frontend localStorage 不得包含 secret。
 - Provider token 採最小 read-only 權限。
 

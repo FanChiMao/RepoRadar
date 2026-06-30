@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 from .github_client import GitHubIssueProvider
 from .gitlab_client import GitLabIssueClient
 
 PROVIDER_NAMES = {"gitlab", "github"}
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 @runtime_checkable
@@ -71,6 +74,20 @@ def source_identity(config: dict[str, Any]) -> str:
     )
 
 
+def _resolve_gitlab_base_url(passed: str | None, configured: str) -> str:
+    """Prefer the configured base URL when it targets loopback (localhost / 127.0.0.1)
+    and the caller supplies a different host — handles the common case where GitLab's
+    external_url is the machine's LAN IP but the service is only reachable via loopback
+    (e.g. Docker with ports forwarded to 127.0.0.1)."""
+    if not passed:
+        return configured
+    passed_host = (urlparse(passed).hostname or "").lower()
+    cfg_host = (urlparse(configured).hostname or "").lower()
+    if passed_host != cfg_host and cfg_host in _LOOPBACK_HOSTS:
+        return configured
+    return passed
+
+
 def create_provider(
     config: dict[str, Any],
     *,
@@ -78,7 +95,9 @@ def create_provider(
     base_url: str | None = None,
 ) -> IssueProvider:
     connection = get_connection(config, provider)
-    resolved_base_url = (base_url or connection["base_url"]).rstrip("/")
+    resolved_base_url = _resolve_gitlab_base_url(
+        base_url, connection["base_url"]
+    ).rstrip("/")
 
     if connection["provider"] == "github":
         return GitHubIssueProvider(
